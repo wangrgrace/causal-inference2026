@@ -16,7 +16,7 @@ knitr::opts_chunk$set(fig.width=4, fig.height=3)
 # install.packages(c('tidyverse', 'here'))
 library(tidyverse)
 library(here)
-df <- readr::read_tsv("Lab 1/full_potential_outcomes.tsv")
+df <- readr::read_tsv("full_potential_outcomes.tsv")
 ```
 
 The data contains the following columns:
@@ -178,14 +178,14 @@ coef(lm(y_confound ~ t_confound + x, data=df))["t_confound"]
 ```
 
 ## Lalonde Dataset
-- Load the `lalonde` dataset from [Imbens & Wu, (2025)](https://pubs.aeaweb.org/doi/pdfplus/10.1257/jep.20251440). The complete replication package from the paper is available [here](https://www.openicpsr.org/openicpsr/project/232201/version/V1/view?path=/openicpsr/232201/fcr:versions/V1/replication) and an additional tutorial developed be the authors can be found [here](https://yiqingxu.org/tutorials/lalonde/).
+- Load the `lalonde` dataset from [Imbens & Xu, (2025)](https://pubs.aeaweb.org/doi/pdfplus/10.1257/jep.20251440). The complete replication package from the paper is available [here](https://www.openicpsr.org/openicpsr/project/232201/version/V1/view?path=/openicpsr/232201/fcr:versions/V1/replication) and an additional tutorial developed be the authors can be found [here](https://yiqingxu.org/tutorials/lalonde/).
 - Estimate the difference in means between the treated and the untreated for the outcome variable `re78`. Compare this benchmark to the ATE estimates obtained using regression adjustment with the covariates.
 - Assess the overlap between the treated and the untreated in the experimental dataset and the two non-experimental datasets (control groups from CPS1 and PSID1). What do you observe? What are the implications for estimation?
 - Discuss the assumptions required for regression adjustment to provide an unbiased estimate of the ATE. Do you think these assumptions are likely to hold in the experimental dataset? What about the non-experimental datasets? 
   
 ```{r}
 # Load the Lalonde dataset
-load("Lab 1/lalonde.RData")
+load("lalonde.RData")
 
 # Import functions from GitHub
 source("https://github.com/xuyiqing/lalonde/blob/main/tutorial/functions.R?raw=TRUE")
