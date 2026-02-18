@@ -1,0 +1,406 @@
+---
+title: "Causal graphs with dagitty in R"
+author: "Draft template"
+date: "2026-02-13"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+# Core packages for DAGs
+# install.packages(c("dagitty", "ggdag", "tidyverse"))
+library(dagitty)
+library(ggdag)
+library(tidyverse)
+```
+
+## Goal and roadmap
+
+This R Markdown walks through a **step-by-step workflow** to build and interpret causal graphs in R:
+
+1. Start with the **three canonical motifs**:
+   - *Mediator* (chain)
+   - *Confounder* (fork / common cause)
+   - *Collider* (common effect)
+
+2. For each motif:
+   - draw the DAG
+   - check the implied (conditional) independencies
+   - connect it to a **real-world example**
+
+3. Recreate two **more complex** examples, then connect them to a **real applied example**.
+
+# Part 1 — Three canonical motifs
+
+## 1) Mediator (chain):  X → Z → Y
+
+### DAG
+
+```{r}
+dag_med <- dagitty("dag {
+  X -> Z -> Y
+}")
+
+ggdag(dag_med) + theme_dag()
+```
+
+```{r}
+# dagify version for better styling
+dag_med <- dagify(
+  Z ~ X,
+  Y ~ Z,
+  exposure = "X",
+  outcome  = "Y",
+  labels = c(X = "X", Y = "Y", Z = "Z")
+)
+# Add styling for better visualization
+ggdag(dag_med, text = TRUE) +
+  geom_dag_edges(edge_width = 1.3) +
+  geom_dag_point(size = 11) +
+  geom_dag_text(color = "white", size = 5) +
+  theme_dag() +
+  theme(
+    plot.margin = margin(20, 20, 20, 20),
+    plot.title = element_text(face = "bold")
+  ) +
+  ggtitle("Mediator: conditioning on Z blocks the path from X to Y")
+```
+### Implied independencies and conditioning
+
+- In a simple chain, **X and Y are associated** (because X can reach Y through Z).
+- But **conditioning on Z blocks** the directed ("front-door") path between X and Y.
+
+```{r}
+impliedConditionalIndependencies(dag_med)
+
+# Check d-separation explicitly:
+dseparated(dag_med, "X", "Y")                 # FALSE (dependent)
+dseparated(dag_med, "X", "Y", "Z")            # TRUE  (independent given Z)
+```
+
+### Real-world example (mediator)
+
+**Policy training program (X)** increases **skills (Z)**, which increases **wages (Y)**.
+
+- If you *control for skills*, you are estimating something closer to the **direct effect** of training on wages, not the **total effect**.
+
+---
+
+## 2) Confounder (fork):  X ← Z → Y
+
+### DAG
+
+```{r}
+dag_confound <- dagitty("dag {
+  Z -> X
+  Z -> Y
+}")
+
+ggdag(dag_confound) + theme_dag()
+```
+
+```{r}
+# dagify version for better styling
+dag_confound <- dagify(
+  X ~ Z,
+  Y ~ Z,
+  exposure = "X",
+  outcome  = "Y",
+  labels = c(X = "X", Y = "Y", Z = "Z")
+)
+
+# Add styling for better visualization
+ggdag(dag_confound, text = TRUE) +
+  geom_dag_edges(edge_width = 1.3) +
+  geom_dag_point(size = 11) +
+  geom_dag_text(color = "white", size = 5) +
+  theme_dag() +
+  theme(
+    plot.margin = margin(20, 20, 20, 20),
+    plot.title = element_text(face = "bold")
+  ) +
+  ggtitle("Confounder: conditioning on Z blocks the backdoor path between X and Y")
+```
+
+### Implied independencies and conditioning
+
+- Without conditioning, **X and Y are associated** through their common cause Z.
+- Conditioning on Z blocks the backdoor path.
+
+```{r}
+impliedConditionalIndependencies(dag_confound)
+
+dseparated(dag_confound, "X", "Y")         # FALSE (dependent)
+dseparated(dag_confound, "X", "Y", "Z")    # TRUE  (independent given Z)
+
+ggdag_adjustment_set(dag_confound, node_size = 20) +
+  theme_dag()
+```
+
+### Real-world example (confounder)
+
+**Coffee (X)** and **heart disease (Y)** may look associated because **smoking (Z)** increases coffee consumption and heart disease.
+
+- Adjusting for smoking targets the causal link from coffee to heart disease (if no other backdoors remain).
+
+---
+
+## 3) Collider (common effect):  X → Z ← Y
+
+### DAG
+
+```{r}
+dag_collider <- dagitty("dag {
+  X -> Z
+  Y -> Z
+}")
+
+ggdag(dag_collider) + theme_dag()
+```
+
+```{r}
+# dagify version for better styling
+dag_collider <- dagify(
+  Z ~ X + Y,
+  exposure = "X",
+  outcome  = "Y",
+  labels = c(X = "X", Y = "Y", Z = "Z")
+)
+
+# Add styling for better visualization
+ggdag(dag_collider, text = TRUE) +
+  geom_dag_edges(edge_width = 1.3) +
+  geom_dag_point(size = 11) +
+  geom_dag_text(color = "white", size = 5) +
+  theme_dag() +
+  theme(
+    plot.margin = margin(20, 20, 20, 20),
+    plot.title = element_text(face = "bold")
+  ) +
+  ggtitle("Collider: conditioning on Z opens association between X and Y")
+```
+
+### Implied independencies and conditioning
+
+- In a pure collider structure, **X and Y are independent marginally**.
+- Conditioning on the collider **opens** a path and makes them dependent (*collider bias* / Berkson’s paradox).
+
+```{r}
+impliedConditionalIndependencies(dag_collider)
+
+dseparated(dag_collider, "X", "Y")          # TRUE  (independent)
+dseparated(dag_collider, "X", "Y", "Z")     # FALSE (dependent given Z)
+```
+
+### Real-world example (collider)
+
+**Talent (X)** and **connections (Y)** both increase the probability of being **hired (Z)**.
+
+- If you only analyze people **who were hired** (conditioning on Z), talent and connections can become spuriously related.
+
+---
+
+# Part 2 — Turning motifs into “causal adjustment” questions
+
+A key workflow with DAGs is:
+
+1. Encode your causal story in a DAG.
+2. Choose the causal estimand: total effect? direct effect? etc.
+3. Use `adjustmentSets()` (backdoor) to propose controls.
+4. Think hard: are those controls measured well? are they pre-treatment?
+
+## Example: asking dagitty for adjustment sets
+
+```{r}
+# In a chain, Z is not a valid adjustment set for the total effect of X on Y (it blocks the path).
+adjustmentSets(dag_med, exposure = "X", outcome = "Y")
+
+# In a fork, Z is a valid adjustment set for the effect of X on Y.
+adjustmentSets(dag_confound, exposure = "X", outcome = "Y")
+
+# In a collider, there are no valid adjustment sets for the effect of X on Y (conditioning on Z creates bias).
+adjustmentSets(dag_collider, exposure = "X", outcome = "Y")
+```
+
+---
+
+# Part 3 — Two more complex examples (inspired by the blackboard)
+
+## 4) Mediation + unobserved confounding (U)
+
+Here is a common “realistic” picture:
+
+- Treatment **D** affects mediator **M**, which affects outcome **Y**
+- There is an unobserved confounder **U** that affects both **D** and **Y**
+
+```{r}
+dag_complex1 <- dagitty("dag {
+  D -> M -> Y
+  U -> D
+  U -> Y
+}")
+
+ggdag(dag_complex1) + theme_dag()
+```
+
+### What does the DAG imply?
+
+```{r}
+impliedConditionalIndependencies(dag_complex1)
+adjustmentSets(dag_complex1, exposure = "D", outcome = "Y")
+```
+
+**Interpretation**
+
+- The backdoor path **D ← U → Y** is open.
+- Because **U is unobserved**, there is **no valid adjustment set using observed variables only**.
+- This is when you start thinking about:
+  - instruments,
+  - natural experiments,
+  - panel designs / fixed effects with strong assumptions,
+  - negative controls / sensitivity analysis,
+  - or (sometimes) collecting better covariates.
+
+> Note: controlling for the mediator **M** here *does not* solve confounding; it changes the estimand (direct effect) and may create additional bias depending on what else is in the system.
+
+---
+
+## 5) Why adjusting for a confounder does not make D and Y independent
+
+A frequent confusion:
+
+- Under ignorability / unconfoundedness, we want something like  
+  **D ⟂ (Y(0), Y(1)) | U**  
+  (treatment is independent of **potential outcomes**, given confounders)
+
+That does **not** mean  
+**D ⟂ Y | U**,  
+because **Y depends on D** through the causal effect.
+
+We can show this with a DAG:
+
+```{r}
+# Causal effect: D -> M -> Y
+# Confounder: U1 affects D and Y
+# Upstream driver: U2 affects U1 and Y
+
+dag_complex2 <- dagitty("dag {
+  D -> M -> Y
+  U1 -> D
+  U1 -> Y
+  U2 -> U1
+  U2 -> Y
+}")
+
+
+ggdag(dag_complex2) + theme_dag()
+
+# dagify version for better styling
+dag_complex2 <- dagify(
+  M ~ D,
+  Y ~ M + U1 + U2,
+  U1 ~ U2,
+  D ~ U1,
+  exposure = "D",
+  outcome  = "Y",
+  labels = c(D = "D", M = "M", Y = "Y", U1 = "U1", U2 = "U2")
+)
+
+ggdag_adjustment_set(dag_complex2, node_size = 20) +
+  theme_dag()
+```
+
+### Key takeaway via d-separation
+
+Even conditioning on U1, **D is not d-separated from Y** because the directed causal path remains.
+
+```{r}
+impliedConditionalIndependencies(dag_complex2)
+dseparated(dag_complex2, "D", "Y", "U1")          # FALSE
+dseparated(dag_complex2, "D", "Y", c("U1","M"))   # TRUE (but note: conditioning on M changes estimand. To get the total effect, we would not condition on M.)
+adjustmentSets(dag_complex2, exposure = "D", outcome = "Y")  # U1 is a valid adjustment set for the total effect, but it does not make D and Y independent because of the causal path through M.
+```
+
+**Interpretation**
+
+- Adjusting for confounders removes *spurious* association (backdoor paths),
+  but the *causal* association (frontdoor path) remains.
+
+---
+
+# Part 4 — A worked real example (template you can adapt)
+
+Below is one realistic applied story (feel free to swap it for your own application).
+
+## Example: land-tenure formalization and deforestation
+
+- **D** = land-tenure formalization intervention (e.g., titling / cadaster update)
+- **M** = perceived tenure security / investment (mechanism)
+- **Y** = deforestation rate
+- **U1** = baseline accessibility / road proximity (measured)
+- **U2** = illicit armed group pressure / illegal market dynamics (often imperfectly measured)
+
+```{r}
+dag_defor <- dagify(
+  M ~ D,
+  Y ~ M + U1 + U2,
+  D ~ U1 + U2,
+  exposure = "D",
+  outcome  = "Y",
+  labels = c(D = "Land-tenure formalization (D)", M = "Perceived tenure security (M)", Y = "Deforestation rate (Y)", U1 = "Baseline accessibility (U1)", U2 = "Illicit market dynamics (U2)")
+)
+
+ggdag(dag_defor) + theme_dag()
+
+ggdag_adjustment_set(dag_defor, node_size = 20) +
+  theme_dag()
+```
+
+### Identification question
+
+```{r}
+adjustmentSets(dag_defor, exposure = "D", outcome = "Y")
+```
+
+- If both **U1 and U2** were measured well, `{U1, U2}` would block backdoors.
+- In practice, **U2** may be partially unobserved → motivates designs beyond plain regression adjustment.
+
+---
+
+# Appendix — Useful functions / snippets
+
+## Quick checklist for any DAG
+
+```{r}
+# 1) Write the DAG
+# dag <- dagitty("dag { ... }")
+
+# 2) dagify version for better styling
+# dag <- dagify(
+#   ...,
+#   exposure = "X", # optional but helps with ggdag styling
+#   outcome  = "Y",
+#   labels = c(X = "X", Y = "Y", Z = "Z") # optional but helps with ggdag styling
+# )
+
+# 3) Plot
+# ggdag(dag, text = FALSE) + theme_dag()
+
+# 4) See implied independencies
+# impliedConditionalIndependencies(dag)
+
+# 5) Find minimal backdoor adjustment sets
+# adjustmentSets(dag, exposure = "X", outcome = "Y")
+
+# 6) Visualize adjustment sets
+# ggdag_adjustment_set(dag, node_size = 20) + theme_dag()
+
+# 7) Test specific d-separation claims
+# dseparated(dag, "X", "Y", "Z")  # or conditioning set as a vector
+```
+
