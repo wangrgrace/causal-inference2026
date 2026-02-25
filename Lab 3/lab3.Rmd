@@ -320,10 +320,10 @@ Goal: keep only the replication-package components relevant to *today’s topics
 
 ## 11.1 Figure 1: Average treatment effects and CATEs of treatment on 2020 turnout under three inverse probability-weighted regression specifications
 ```{r fig1}
-source('Lab 3/helper_file.R')
+source('helper_file.R')
 
 # load data and uncount
-aggregated_set <- read_rds(file = "Lab 3/aggregated_analysis_set.rds")
+aggregated_set <- read_rds(file = "aggregated_analysis_set.rds")
 main_analysis_set <- uncount(aggregated_set, weights = n)
 
 formula_1 <- formula("voted_in_2020 ~ condition") 
@@ -621,10 +621,10 @@ g
 
 ## 11.2 Figure 5: Balance on pre-treatment covariates
 ```{r fig5}
-source('Lab 3/helper_file.R')
+source('helper_file.R')
 
 # load data and uncount
-aggregated_set <- read_rds(file = "Lab 3/aggregated_analysis_set.rds")
+aggregated_set <- read_rds(file = "aggregated_analysis_set.rds")
 main_analysis_set <- uncount(aggregated_set, weights = n)
 
 all_covs <-
