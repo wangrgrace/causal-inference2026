@@ -13,6 +13,8 @@ In this lab session, we analyse the 3 canonical motifs behind causal inference: 
 ## Lab 3 (Randomness, Natural and Otherwise)
 Exploiting random variation is not the only way to infer causal effects, but it’s a useful one. In this session we consider the advantages and disadvantages of randomized controlled experiments as a research design ideal, what happens when they go wrong, and how to exploit naturally occurring forms of randomness. 
 
+During the lab, we analyze some examples from class and implement the concepts studied during the session on a generated dataset. Additionally, we use relevant chunks from the analysis done by [Aggarwal et al. (2023)](https://www.nature.com/articles/s41562-022-01487-4) on the effects of  digital advertising affects voter turnout. The replication package can be found [here](https://isps.yale.edu/research/data/d199).
+
 ## Lab 4 (What question? Defining estimands)
 In this session, we will learn how to express the questions we want to answer as precise quantitative statements (“estimands”) which map causal claims to data we collect. 
 
