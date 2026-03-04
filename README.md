@@ -18,6 +18,8 @@ During the lab, we analyze some examples from class and implement the concepts s
 ## Lab 4 (What question? Defining estimands)
 In this session, we will learn how to express the questions we want to answer as precise quantitative statements (“estimands”) which map causal claims to data we collect. 
 
+Different theoretical estimands and estimation procedures based on the examples from [Lundberg et al.](https://journals.sagepub.com/doi/10.1177/00031224211004187) are included with additional generated datasets. The replication package from the paper can be found [here](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/ASGOVU). At the end of the lab, an extra example using the `lalonde` dataset is briefly implemented.
+
 ## Lab 5 (Adjustment, Regression, and Fixed Effects)
 In this session we consider the familiar old regression model from a causal point of view, as a generalisation of stratification. In doing so, we discover some curious properties of least-squares estimators. We’ll also revisit the Frisch-Waugh-Lovell decomposition and its relation to statistical control and ‘fixed effects’ as we’ll need it later for Machine Learning extensions.
 

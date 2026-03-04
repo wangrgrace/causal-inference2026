@@ -1,0 +1,364 @@
+---
+title: "Lab 4 — Estimands in practice"
+subtitle: "Applied workflows: from estimands to estimators (and why coefficients are not enough)"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+set.seed(123)
+```
+
+## What we do in this lab (90 minutes)
+
+This file is **practice-first**: you will compute estimates for multiple estimands using simulated and (when available) real data.
+
+If you have `estimand_workflow.png` in the same folder, you can display the workflow reminder:
+
+```{r workflow, echo=FALSE}
+if (file.exists("estimand_workflow.png")) {
+  knitr::include_graphics("estimand_workflow.png")
+}
+```
+
+---
+
+## 0. Packages
+
+```{r packages}
+pkgs <- c("tidyverse", "broom", "marginaleffects", "dagitty", "ggdag")
+missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing) > 0) {
+  cat("Missing packages:\n", paste0("- ", missing, collapse = "\n"),
+      "\n\nInstall with:\ninstall.packages(c(",
+      paste(sprintf('\"%s\"', missing), collapse = ", "),
+      "))\n")
+}
+```
+
+Optional packages used if installed:
+- `mediation` (natural direct/indirect effects)
+- `ivreg` (2SLS)
+- `causaldata` or `MatchIt` (Lalonde job training)
+
+---
+
+## 1. ATE/ATT/ATC/CATE with confounding + heterogeneity (simulation)
+
+### 1.1 Simulate a world
+
+```{r sim-ate}
+library(tidyverse)
+
+n <- 6000
+X <- rnorm(n)
+
+# True heterogeneous effect: higher effect when X>0
+tau_x <- 0.3 + 0.8 * (X > 0)
+
+# Potential outcomes
+Y0 <- 1 + 0.7 * X + rnorm(n, sd = 1)
+Y1 <- Y0 + tau_x
+
+# Confounded treatment assignment
+pD <- plogis(-0.2 + 1.0 * X)
+D  <- rbinom(n, 1, pD)
+
+Y <- ifelse(D == 1, Y1, Y0)
+
+df <- tibble(Y, D, X, Y0, Y1, tau_x, pD)
+df %>% dplyr::glimpse()
+```
+
+### 1.2 “Truth” (theoretical estimands) because we have potential outcomes
+
+- **ATE**
+- **ATT**
+- **ATC**
+- **CATE** 
+```{r true-ate}
+true <- tibble(
+  estimand = c("ATE", "ATT", "ATC", "CATE: X>0", "CATE: X<=0"),
+  value = c(
+    mean(df$Y1 - df$Y0),
+    mean((df$Y1 - df$Y0)[df$D == 1]),
+    mean((df$Y1 - df$Y0)[df$D == 0]),
+    mean((df$Y1 - df$Y0)[df$X > 0]),
+    mean((df$Y1 - df$Y0)[df$X <= 0])
+  )
+)
+true
+```
+
+### 1.3 Naive estimator (difference in means)
+
+Empirical target (no adjustment)
+
+```{r naive-diff}
+naive <- with(df, mean(Y[D==1]) - mean(Y[D==0]))
+naive
+```
+
+### 1.4 G-formula / imputation estimator (regression → predict potential outcomes)
+
+
+The g-formula refers to the idea of modeling the outcome as a function of treatment and covariates, then using that model to predict potential outcomes under different treatment scenarios, and finally averaging those predictions to estimate causal effects.
+Empirical estimand: g-formula with a regression model that allows for heterogeneity (interaction with X).
+```{r gformula}
+m_g <- lm(Y ~ D * X, data = df)  # allow heterogeneity via interaction
+
+df_g <- df %>%
+  mutate(
+    yhat1 = predict(m_g, newdata = mutate(., D = 1)),
+    yhat0 = predict(m_g, newdata = mutate(., D = 0)),
+    diff  = yhat1 - yhat0
+  )
+
+ate_hat <- mean(df_g$diff)
+att_hat <- mean(df_g$diff[df$D==1])
+atc_hat <- mean(df_g$diff[df$D==0])
+
+tibble(
+  estimand = c("ATE", "ATT", "ATC"),
+  estimate = c(ate_hat, att_hat, atc_hat)
+)
+```
+
+**Coefficient vs estimand:** the *coefficient* on `D` is not “the ATE” once effects vary with X.
+
+```{r coef-vs-estimand}
+coef(m_g)
+```
+
+### 1.6 IPW (propensity score weighting)
+
+Propensity score weighting re-weights the sample to create a pseudo-population where treatment is independent of covariates, allowing for estimation of causal effects without modeling the outcome directly.
+For the ATE, we use inverse probability of treatment weights (IPTW), where treated units are weighted by 1/e_hat and control units are weighted by 1/(1-e_hat):
+```{r ipw}
+m_ps <- glm(D ~ X, data = df, family = binomial())
+e_hat <- predict(m_ps, type = "response")
+
+w_ate <- ifelse(df$D==1, 1/e_hat, 1/(1-e_hat))
+ipw_ate <- with(df, weighted.mean(Y[D==1], w_ate[D==1]) - weighted.mean(Y[D==0], w_ate[D==0]))
+ipw_ate
+```
+
+**ATT weights**:
+For the ATT, we weight treated units by 1 and control units by the odds of treatment (e_hat/(1-e_hat)):
+```{r ipw-att}
+w_att <- ifelse(df$D==1, 1, e_hat/(1-e_hat))
+ipw_att <- with(df, weighted.mean(Y[D==1], w_att[D==1]) - weighted.mean(Y[D==0], w_att[D==0]))
+ipw_att
+```
+
+---
+
+## 2. Causal interaction (2×2 factorial design)
+
+### 2.1 Simulate a factorial experiment
+
+```{r sim-interaction}
+n <- 8000
+A <- rbinom(n, 1, 0.5)
+D <- rbinom(n, 1, 0.5)
+
+linpred <- -1 + 0.4*A + 0.6*D - 0.7*(A*D)  # negative interaction
+p <- plogis(linpred)
+Y <- rbinom(n, 1, p)
+
+fd <- tibble(Y, A, D)
+```
+
+### 2.2 Estimate by cell means (difference-in-differences)
+
+```{r did-interaction}
+cell <- fd %>%
+  group_by(A, D) %>%
+  summarize(p = mean(Y), n = n(), .groups = "drop")
+
+cell
+
+p11 <- cell$p[cell$A==1 & cell$D==1]
+p10 <- cell$p[cell$A==1 & cell$D==0]
+p01 <- cell$p[cell$A==0 & cell$D==1]
+p00 <- cell$p[cell$A==0 & cell$D==0]
+
+tau_int_hat <- (p11 - p10) - (p01 - p00)
+tau_int_hat
+```
+
+### 2.3 Same estimand via regression
+
+```{r reg-interaction}
+m_int <- glm(Y ~ A * D, data = fd, family = binomial())
+summary(m_int)$coefficients["A:D", ]
+```
+
+---
+
+## 3. Mediation: CDE vs NDE (simulation)
+
+### 3.1 Simulate data with a mediator
+
+```{r sim-mediation}
+n <- 7000
+X <- rnorm(n)
+
+pD <- plogis(-0.1 + 0.8*X)
+D <- rbinom(n, 1, pD)
+
+pM <- plogis(-0.2 + 0.9*D + 0.6*X)
+M <- rbinom(n, 1, pM)
+
+pY <- plogis(-1 + 0.5*D + 0.9*M - 0.4*D*M + 0.5*X)
+Y <- rbinom(n, 1, pY)
+
+mdf <- tibble(Y, D, M, X)
+```
+
+### 3.2 Controlled Direct Effect (CDE)
+
+The controlled direct effect (CDE) of a treatment on an outcome is the effect of the treatment on the outcome when the mediator is held fixed at a specific value (interaction of D and M). 
+It quantifies the direct effect of the treatment that is not mediated through the mediator variable.
+```{r cde-gformula}
+m_y <- glm(Y ~ D * M + X, data = mdf, family = binomial())
+
+pred_cde <- function(m_val){
+  y1m <- predict(m_y, newdata = mutate(mdf, D = 1, M = m_val), type = "response")
+  y0m <- predict(m_y, newdata = mutate(mdf, D = 0, M = m_val), type = "response")
+  mean(y1m - y0m)
+}
+
+tibble(
+  estimand = c("CDE(m=0)", "CDE(m=1)"),
+  estimate = c(pred_cde(0), pred_cde(1))
+)
+```
+
+### 3.3 Natural Direct Effect (NDE) and Natural Indirect Effect (NIE)
+
+The natural direct effect (NDE) of a treatment on an outcome is the effect of the treatment on the outcome that is not mediated through a specific mediator variable, while allowing the mediator to take its natural value as it would under no treatment.
+
+```{r nde-mediation, eval=FALSE}
+install.packages("mediation")
+library(mediation)
+
+m_m <- glm(M ~ D + X, data = mdf, family = binomial())
+m_y <- glm(Y ~ D + M + X, data = mdf, family = binomial())
+
+med <- mediate(m_m, m_y, treat = "D", mediator = "M", sims = 500)
+summary(med)
+```
+
+---
+
+## 4. Noncompliance: ITT and LATE (simulation)
+
+- **ITT**: The intention-to-treat (ITT) effect is the average effect of being assigned to the treatment group, regardless of whether individuals actually received the treatment or not. It captures the effect of the assignment itself, which can be useful for policy evaluation and real-world applicability.
+- **LATE (Wald)**: The Local Average Treatment Effect (LATE) is the average effect of the treatment for the subgroup of individuals who comply with their assigned treatment. It is estimated using the Wald estimator, which divides the ITT effect on the outcome by the ITT effect on the treatment received, effectively isolating the effect for compliers.
+
+```{r iv-sim}
+n <- 9000
+Z <- rbinom(n, 1, 0.5)
+
+type <- sample(c("never","always","complier"), n, replace=TRUE, prob=c(0.55, 0.10, 0.35))
+D0 <- ifelse(type=="always", 1, 0)
+D1 <- ifelse(type %in% c("always","complier"), 1, 0)
+D  <- ifelse(Z==1, D1, D0)
+
+X <- rnorm(n)
+tau <- 1.0
+Y0 <- 0.2 + 0.3*X + rnorm(n)
+Y1 <- Y0 + tau
+Y  <- ifelse(D==1, Y1, Y0)
+
+ivdf <- tibble(Y, D, Z, type)
+
+ITT_Y <- with(ivdf, mean(Y[Z==1]) - mean(Y[Z==0]))
+ITT_D <- with(ivdf, mean(D[Z==1]) - mean(D[Z==0]))
+Wald  <- ITT_Y / ITT_D
+
+tibble(
+  quantity = c("ITT_Y", "First stage (ITT_D)", "Wald LATE"),
+  estimate = c(ITT_Y, ITT_D, Wald)
+)
+```
+
+2SLS:
+
+```{r 2sls-optional}
+if (requireNamespace("ivreg", quietly = TRUE)) {
+  fit <- ivreg::ivreg(Y ~ D | Z, data = ivdf)
+  broom::tidy(fit)
+}
+```
+
+---
+
+## 5. Optional real data: Lalonde job training
+
+`marginaleffects::avg_comparisons()` can be used to estimate ATE/ATT/CATE from regression models with covariates, which is a common approach in applied work. 
+The `lalonde` dataset from `MatchIt` (or similar datasets in `causaldata`) is a classic example for evaluating the effect of a job training program on earnings, where treatment assignment is confounded by observed covariates.
+The `avg_comparisons()` function computes average marginal effects, which can be interpreted as ATE/ATT/CATE depending on the specification of the model and the variables included. 
+In this case, it will provide an estimate of the average effect of the treatment (`treat`) on the outcome (`re78`), controlling for the covariates included in the regression model.
+```{r lalonde-optional}
+library(tidyverse)
+
+get_jobtraining_data <- function() {
+  if (requireNamespace("MatchIt", quietly = TRUE)) {
+    data("lalonde", package = "MatchIt")
+    return(as_tibble(lalonde))
+  }
+
+  if (requireNamespace("causaldata", quietly = TRUE)) {
+    avail <- data(package = "causaldata")$results[, "Item"]
+    cand <- avail[grepl("lalonde|nsw|job|train", avail, ignore.case = TRUE)]
+    message("Datasets in causaldata matching lalonde/nsw/job/train:\n", paste(cand, collapse = ", "))
+    stop("No `lalonde` dataset found in `causaldata` here. Install `MatchIt` for the classic Lalonde dataset.")
+  }
+
+  stop("Install `MatchIt` (recommended): install.packages('MatchIt')")
+}
+
+l <- get_jobtraining_data()
+glimpse(l)
+
+m <- lm(re78 ~ treat + age + educ + race + married + nodegree + re74 + re75,
+        data = l)
+
+if (requireNamespace("marginaleffects", quietly = TRUE)) {
+  library(marginaleffects)
+  avg_comparisons(m, variables = "treat")
+}
+```
+
+---
+
+## 7. Estimands and estimators included (cheat sheet)
+
+### Estimands (theoretical)
+- **ATE**: The average treatment effect (ATE) is the average difference in potential outcomes between individuals who receive the treatment and those who do not. 
+- **ATT**: The average treatment effect on the treated (ATT) is the average difference in potential outcomes for individuals who are actually treated. 
+- **ATC**: The average treatment effect on the controls (ATC) is the average difference in potential outcomes for individuals who are not treated. 
+- **CATE**: The conditional average treatment effect (CATE) is the average treatment effect conditional on observed covariates (X=x). 
+- **Causal interaction**: The causal interaction effect in a factorial design is the difference in treatment effects across levels of another factor. 
+- **CDE(m)**: The controlled direct effect (CDE) of a treatment on an outcome is the effect of the treatment on the outcome when the mediator is held fixed at a specific value (interaction of D and M).
+- **NDE**: The natural direct effect (NDE) of a treatment on an outcome is the effect of the treatment on the outcome that is not mediated through a specific mediator variable, while allowing the mediator to take its natural value as it would under no treatment.
+- **NIE**: The natural indirect effect (NIE) of a treatment on an outcome is the effect of the treatment on the outcome that is mediated through a specific mediator variable, while allowing the mediator to take its natural value as it would under no treatment.
+- **ITT**: The intention-to-treat (ITT) effect is the average effect of being assigned to the treatment group, regardless of whether individuals actually received the treatment or not. It captures the effect of the assignment itself, which can be useful for policy evaluation and real-world applicability.
+- **LATE (Wald)**: The Local Average Treatment Effect (LATE) is the average effect of the treatment for the subgroup of individuals who comply with their assigned treatment. It is estimated using the Wald estimator, which divides the ITT effect on the outcome by the ITT effect on the treatment received, effectively isolating the effect for compliers. The formula for the Wald estimator is:
+
+### Example estimators (empirical procedures)
+- Difference-in-means (RCT / ITT)
+- Regression adjustment / g-formula (predict potential outcomes, then average)
+- IPW (ATE and ATT weighting)
+- Wald ratio and (optional) 2SLS for LATE
+- `mediation::mediate()` for NDE/NIE
+- `marginaleffects::avg_comparisons()` for regression-based ATE/ATT/CATE with covariates
+
