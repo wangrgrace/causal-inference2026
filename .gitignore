@@ -1,0 +1,26 @@
+# LaTeX auxiliary files
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.nav
+*.out
+*.snm
+*.synctex.gz
+*.toc
+
+# Optional extra LaTeX temp files
+*.bbl
+*.blg
+*.lof
+*.lot
+*.fmt
+*.fot
+*.cb
+*.cb2
+*.xdv
+*.bcf
+*.run.xml
+
+# Ignore .vscode settings
+.vscode/

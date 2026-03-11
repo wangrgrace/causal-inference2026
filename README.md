@@ -1,5 +1,7 @@
 # Causal Inference Lab Material (Spring 2026 - Hertie School)
 
+This repository is based on the structure of the Causal Inference course taught by [Oliver Lang](https://olivermlang.com/) at the Hertie School, for the Spring Semester of 2026. The lab sessions are led by [Camilo Pedraza Jiménez](https://camilopedrazajimenez.com/). The course was designed based on additinal lecturers, such as Will Lowe, AsyaMagazinnik, Adeline Lo, Matthew Blackwell, Chris Conlon, Felix Elwert and Cyrus Samii.
+
 ## Lab 1 (Potential Outcomes)
 We first review the counterfactual theory of causation and the potential outcomes framework.
 
@@ -22,6 +24,8 @@ Different theoretical estimands and estimation procedures based on the examples 
 
 ## Lab 5 (Adjustment, Regression, and Fixed Effects)
 In this session we consider the familiar old regression model from a causal point of view, as a generalisation of stratification. In doing so, we discover some curious properties of least-squares estimators. We’ll also revisit the Frisch-Waugh-Lovell decomposition and its relation to statistical control and ‘fixed effects’ as we’ll need it later for Machine Learning extensions.
+
+During the lab, we get a deeper understanding on how to interprete our causal estimate as a marginal effect, how to analyse the omitted variable bias, and how to use sensitivity analysis, based on [Cinelli and Hazlett (2020)](https://academic.oup.com/jrsssb/article/82/1/39/7056023?login=true&guestAccessKey=) to assess the robustness of our estimates. We use the Lalonde dataset to see a practical use of thetopics covered duing the session. At the end of the session, we introduce the `regweight` developed by [Drew Dimmery](https://ddimmery.github.io/regweight/index.html), which in useful when you want to know which observations matter most for a particular regression coefficient. 
 
 ## Lab 6 (Weighting)
 Regression-type adjustments will take us a long way towards controlling confounding, but sometimes we need more, or different, or both. In this session we’ll consider weighting methods with a focus on models of treatment assignment (a.k.a. the propensity scores) rather than regression’s implicit focus on modelling the the outcome. Having both at once sometimes gets us desirable ‘double robustness’ to model misspecification. 

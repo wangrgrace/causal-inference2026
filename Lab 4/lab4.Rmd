@@ -15,20 +15,6 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 set.seed(123)
 ```
 
-## What we do in this lab (90 minutes)
-
-This file is **practice-first**: you will compute estimates for multiple estimands using simulated and (when available) real data.
-
-If you have `estimand_workflow.png` in the same folder, you can display the workflow reminder:
-
-```{r workflow, echo=FALSE}
-if (file.exists("estimand_workflow.png")) {
-  knitr::include_graphics("estimand_workflow.png")
-}
-```
-
----
-
 ## 0. Packages
 
 ```{r packages}
