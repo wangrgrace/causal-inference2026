@@ -1,0 +1,320 @@
+---
+title: "Causal Inference Lab 6: Weighting, and Balance
+output: html_document
+fig_caption: yes
+editor_options:
+  chunk_output_type: console
+---
+
+## Overview
+
+In this lab, we move from the theory of weighting to a practical application using the LaLonde-Dehejia-Wahba (LDW) data. The main goal is to see how different estimators behave when treated and control units are not directly comparable.
+
+We will focus on four ideas:
+
+1. **Balance** as the design target.
+2. **Propensity scores** as a balancing score and overlap diagnostic.
+3. **Weighting estimators** such as IPW, CBPS, and entropy balancing.
+4. **Estimator comparison** on the LaLonde data.
+
+A practical note: the comparison functions from the Imbens-Xu tutorial are written for the **ATT**. To stay consistent with that workflow, the estimator comparison section below also focuses on the ATT.
+
+## Setup
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(fig.width = 7, fig.height = 4.5)
+
+required_packages <- c(
+  "tidyverse",
+  "estimatr",
+  "grf",
+  "CBPS",
+  "hbal"
+)
+
+missing_packages <- required_packages[!required_packages %in% rownames(installed.packages())]
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages)
+}
+
+library(tidyverse)
+library(estimatr)
+library(grf)
+library(CBPS)
+library(hbal)
+
+# Source the tutorial helper functions
+source("https://raw.githubusercontent.com/xuyiqing/lalonde/main/tutorial/functions.R")
+
+# Download the LDW data if it is not already in your working directory
+if (!file.exists("lalonde.RData")) {
+  download.file(
+    url = "https://raw.githubusercontent.com/xuyiqing/lalonde/main/tutorial/data/lalonde.RData",
+    destfile = "lalonde.RData",
+    mode = "wb"
+  )
+}
+
+load("lalonde.RData")
+
+# Variables used throughout the lab
+Y <- "re78"
+treat <- "treat"
+covar <- c(
+  "age", "education", "black", "hispanic", "married",
+  "nodegree", "re74", "re75", "u74", "u75"
+)
+```
+
+## 1. Meet the data
+
+The loaded file contains several datasets. The two most useful for this lab are:
+
+- `ldw`: the experimental LDW sample.
+- `ldw_cps`: the treated LDW units combined with nonexperimental CPS controls.
+
+The experimental sample gives us a useful benchmark, while `ldw_cps` is the observational sample where design problems are much more visible.
+
+```{r data-overview}
+tibble(
+  sample = c("LDW experimental", "LDW-CPS1"),
+  n = c(nrow(ldw), nrow(ldw_cps)),
+  treated = c(sum(ldw$treat == 1), sum(ldw_cps$treat == 1)),
+  control = c(sum(ldw$treat == 0), sum(ldw_cps$treat == 0))
+)
+```
+
+```{r look-at-variables}
+ldw_cps %>%
+  dplyr::select(treat, all_of(covar), all_of(Y)) %>%
+  slice(1:6)
+```
+
+## 2. A simple benchmark: difference in means
+
+We start with the raw treated-control difference in earnings in 1978.
+
+```{r diff-in-means}
+diff(ldw, Y, treat)
+diff(ldw_cps, Y, treat)
+```
+
+The first estimate comes from the experimental sample; the second comes from the observational sample. 
+The gap between them already tells us that naive comparisons can move a lot once the control group changes.
+
+## 3. Why propensity scores help as a diagnostic
+
+A key problem in observational data is that overlap is hard to inspect in a 10-dimensional covariate space. 
+The propensity score compresses those covariates into a single number, which makes overlap easier to visualize.
+
+### 3.1 Before the propensity score: raw covariate distributions
+
+Here we compare a few important covariates directly.
+
+```{r raw-covariate-overlap, fig.height=6}
+plot_df <- ldw_cps %>%
+  dplyr::select(treat, age, education, re74, re75) %>%
+  pivot_longer(cols = c(age, education, re74, re75),
+               names_to = "variable", values_to = "value") %>%
+  mutate(group = if_else(treat == 1, "Treated", "Control"))
+
+ggplot(plot_df, aes(x = value, fill = group)) +
+  geom_density(alpha = 0.4) +
+  facet_wrap(~ variable, scales = "free", ncol = 2) +
+  labs(
+    title = "Raw covariate distributions in LDW-CPS1",
+    x = NULL,
+    y = "Density",
+    fill = NULL
+  ) +
+  theme_minimal()
+```
+
+This is already useful, but it is still a collection of separate univariate views. It does not solve the multivariate overlap problem.
+
+### 3.2 With the propensity score: one-dimensional overlap plots
+
+```{r assess-overlap, fig.height=4.5}
+par(mfrow = c(1, 2))
+ldw_ps <- assess_overlap(data = ldw, treat = treat, cov = covar)
+ldw_cps_ps <- assess_overlap(data = ldw_cps, treat = treat, cov = covar)
+```
+
+The experimental sample should show much better overlap than the observational LDW-CPS1 sample.
+
+**Important:** the propensity score does **not create** overlap where there is no support. What it does is compress the covariates into a balancing score, which makes lack of common support easier to diagnose.
+
+## 4. A manual propensity score weighting example
+
+The tutorial's `ipw()` function estimates ATT weights using a probability forest. Here we reproduce the same basic logic step by step so you can see what the weights are doing.
+
+```{r manual-att-ipw}
+ps_model <- probability_forest(
+  X = ldw_cps[, covar, drop = FALSE],
+  Y = as.factor(ldw_cps[, treat]),
+  seed = 1234
+)
+
+ldw_cps$ps_hat <- ps_model$predictions[, 2]
+ldw_cps$w_att_ipw <- ifelse(ldw_cps$treat == 1, 1, ldw_cps$ps_hat / (1 - ldw_cps$ps_hat))
+
+summary(ldw_cps$ps_hat)
+summary(ldw_cps$w_att_ipw)
+```
+
+Now use those ATT weights in a weighted regression of the outcome on treatment.
+
+```{r weighted-att-estimate}
+ipw_manual <- lm_robust(re78 ~ treat, data = ldw_cps, weights = w_att_ipw, se_type = "stata")
+summary(ipw_manual)$coefficients["treat", ]
+```
+
+### 4.1 Did weighting improve balance?
+
+A quick way to see this is to compare treated means to control means before and after weighting.
+
+```{r balance-before-after}
+weighted_mean <- function(x, w) {
+  sum(x * w) / sum(w)
+}
+
+balance_tbl <- map_dfr(covar, function(v) {
+  x <- ldw_cps[[v]]
+  treated <- ldw_cps$treat == 1
+  control <- ldw_cps$treat == 0
+
+  tibble(
+    variable = v,
+    treated_mean = mean(x[treated]),
+    control_mean_unweighted = mean(x[control]),
+    control_mean_weighted = weighted_mean(x[control], ldw_cps$w_att_ipw[control])
+  )
+})
+
+balance_tbl
+```
+
+The weighted control means should usually move closer to the treated means. That is the design goal of weighting.
+
+## 5. Regression versus outcome modeling using regression
+
+These two methods sound similar but they are doing different things.
+
+### Regression adjustment (`reg`)
+
+This fits one outcome model to the full sample:
+The estimated treatment effect is the coefficient on `treat`.
+
+### Outcome modeling using regression (`om.reg`)
+
+This fits an outcome model **only among the controls**.
+Then uses that fitted model to predict the untreated outcomes for the treated units. The ATT is estimated by comparing:
+
+- the observed treated outcomes, and
+- the predicted untreated outcomes for those same treated units.
+
+So the difference is:
+
+- `reg` adjusts for covariates in **one pooled regression**.
+- `om.reg` uses the controls to **impute the treated units' counterfactual untreated outcome**.
+
+## 6. Estimator comparison on LDW-CPS1
+
+Now we reproduce a simplified version of the comparison figure from the tutorial using only the methods requested for this lab:
+
+- `diff`
+- `reg`
+- `om.reg`
+- `ipw`
+- `cbps`
+- `ebal`
+
+```{r estimate-selected-methods}
+methods_keep <- c("diff", "reg", "om.reg", "ipw", "cbps", "ebal")
+labels_keep <- c("Diff-in-Means", "Reg", "OM: Reg", "IPW", "CBPS", "Ebal")
+
+# Experimental benchmark
+out_exp <- estimate_all(
+  data = ldw,
+  Y = Y,
+  treat = treat,
+  covar = covar,
+  methods = methods_keep
+)
+
+# Observational sample
+out_cps <- estimate_all(
+  data = ldw_cps,
+  Y = Y,
+  treat = treat,
+  covar = covar,
+  methods = methods_keep
+)
+
+out_exp
+out_cps
+```
+
+```{r plot-comparison, fig.height=5.2}
+par(mfrow = c(1, 1))
+
+benchmark_band <- out_exp["diff", c("CI_lower", "CI_upper")]
+benchmark_line <- out_exp["diff", "Estimate"]
+
+plot_coef(
+  out = out_cps,
+  methods = methods_keep,
+  labels = labels_keep,
+  band = benchmark_band,
+  line = benchmark_line,
+  ylim = c(-15000, 5500),
+  main = "(A) LDW-CPS1"
+)
+```
+
+## 7. Reading the comparison plot
+
+Use the figure above as follows:
+
+- The **red dotted line** is the experimental benchmark ATT estimate.
+- The **shaded red band** is the benchmark confidence interval.
+- Each black point and interval is one estimator applied to the observational LDW-CPS1 sample.
+
+Questions to ask:
+
+1. Which methods move the estimate closer to the experimental benchmark?
+2. Which methods remain far away from the benchmark?
+3. Do weighting-based methods look more stable than the naive difference in means?
+4. How much do the results depend on overlap and balance?
+
+## 8. Suggested extension
+
+Repeat the same workflow for `ldw_psid` instead of `ldw_cps`.
+
+```{r extension-template, eval=FALSE}
+out_psid <- estimate_all(
+  data = ldw_psid,
+  Y = Y,
+  treat = treat,
+  covar = covar,
+  methods = methods_keep
+)
+
+plot_coef(
+  out = out_psid,
+  methods = methods_keep,
+  labels = labels_keep,
+  band = benchmark_band,
+  line = benchmark_line,
+  ylim = c(-15000, 5500),
+  main = "(B) LDW-PSID1"
+)
+```
+
+## 9. Main takeaway
+
+This lab should make three ideas concrete:
+
+1. The propensity score gives a **one-dimensional diagnostic** for overlap.
+2. Weighting methods differ in **how they construct weights**, but they all aim at better balance.
+3. In observational data, different estimators can behave very differently when overlap is poor.
