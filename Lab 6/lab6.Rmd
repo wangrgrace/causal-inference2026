@@ -1,5 +1,5 @@
 ---
-title: "Causal Inference Lab 6: Weighting, and Balance
+title: "Causal Inference Lab 6: Weighting, and Balance"
 output: html_document
 fig_caption: yes
 editor_options:
@@ -99,13 +99,17 @@ diff(ldw, Y, treat)
 diff(ldw_cps, Y, treat)
 ```
 
-The first estimate comes from the experimental sample; the second comes from the observational sample. 
-The gap between them already tells us that naive comparisons can move a lot once the control group changes.
+The first estimate comes from the experimental sample; the second comes from the observational sample. The gap between them already tells us that naive comparisons can move a lot once the control group changes.
 
 ## 3. Why propensity scores help as a diagnostic
 
-A key problem in observational data is that overlap is hard to inspect in a 10-dimensional covariate space. 
-The propensity score compresses those covariates into a single number, which makes overlap easier to visualize.
+A key problem in observational data is that overlap is hard to inspect in a 10-dimensional covariate space. The propensity score compresses those covariates into a single number,
+
+\[
+\hat e(X_i) = \widehat{P}(T_i = 1 \mid X_i),
+\]
+
+which makes overlap easier to visualize.
 
 ### 3.1 Before the propensity score: raw covariate distributions
 
@@ -113,7 +117,7 @@ Here we compare a few important covariates directly.
 
 ```{r raw-covariate-overlap, fig.height=6}
 plot_df <- ldw_cps %>%
-  dplyr::select(treat, age, education, re74, re75) %>%
+  select(treat, age, education, re74, re75) %>%
   pivot_longer(cols = c(age, education, re74, re75),
                names_to = "variable", values_to = "value") %>%
   mutate(group = if_else(treat == 1, "Treated", "Control"))
@@ -147,6 +151,12 @@ The experimental sample should show much better overlap than the observational L
 ## 4. A manual propensity score weighting example
 
 The tutorial's `ipw()` function estimates ATT weights using a probability forest. Here we reproduce the same basic logic step by step so you can see what the weights are doing.
+
+For the ATT, treated units receive weight 1, and controls receive
+
+\[
+\frac{\hat e_i}{1-\hat e_i}.
+\]
 
 ```{r manual-att-ipw}
 ps_model <- probability_forest(
@@ -203,12 +213,22 @@ These two methods sound similar but they are doing different things.
 ### Regression adjustment (`reg`)
 
 This fits one outcome model to the full sample:
+
+\[
+Y_i = \alpha + \tau T_i + X_i'\beta + u_i.
+\]
+
 The estimated treatment effect is the coefficient on `treat`.
 
 ### Outcome modeling using regression (`om.reg`)
 
-This fits an outcome model **only among the controls**.
-Then uses that fitted model to predict the untreated outcomes for the treated units. The ATT is estimated by comparing:
+This fits an outcome model **only among the controls**:
+
+\[
+Y_i = \alpha + X_i'\beta + u_i \qquad \text{for } T_i = 0,
+\]
+
+then uses that fitted model to predict the untreated outcomes for the treated units. The ATT is estimated by comparing:
 
 - the observed treated outcomes, and
 - the predicted untreated outcomes for those same treated units.
@@ -276,7 +296,7 @@ plot_coef(
 
 Use the figure above as follows:
 
-- The **red dotted line** is the experimental benchmark ATT estimate.
+- The **red solid line** is the experimental benchmark ATT estimate.
 - The **shaded red band** is the benchmark confidence interval.
 - Each black point and interval is one estimator applied to the observational LDW-CPS1 sample.
 

@@ -35,6 +35,8 @@ The lab session focuses on the theoretical aspects of weighting for covariate ba
 ## Lab 7 (Collider Bias)
 Naturally occurring collider bias (where we do not induce it deliberately ourselves) provides a particularly illuminating frame for understanding why all the things you were told not to do in your last statistics class were bad, e.g. selection on the dependent variable, conditioning on post-treatment outcomes, and generally pointing statistical models at data whose provenance you are unsure of. Collider bias is a particular issue for policy students dealing with administrative data that usually created in response to some event, for example a birth, doctor’s appointment, accident, or arrest. Colliders will be particularly troublesome when we try to answer some questions with this kind of non-randomly sampled data. 
 
+During the lab, we look at practical examples with generated data to understand how collider bias happens. We analyze specific data problem that are seen as collider bias and study the particular case of M-bias discused by [Ding & Miratrix (2014)](https://arxiv.org/pdf/1408.0324).
+
 ## Lab 8 (Principal stratification & Instrumental Variable)
 In this session, we will learn how to use the framework of principal stratification to understand and define causal effects. This framework delineates groups according to how units will respond to different interventions. The discussion of principal stratification motivates discussion of non-compliance in experiments and instrumental variable estimators.
 

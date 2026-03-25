@@ -1,0 +1,543 @@
+---
+title: "Lab 7: Collider Bias in Practice"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+
+library(tidyverse)
+library(knitr)
+
+theme_set(theme_minimal())
+set.seed(1234)
+```
+
+# Overview
+
+This lab turns the collider lecture into a set of practical simulations. We will focus on three questions:
+
+1. **Why are colliders problematic?**
+2. **How do familiar applied problems become collider bias?**
+3. **Why can M-bias make adjustment ambiguous?**
+
+All examples use **generated data**. That is deliberate: the goal is to isolate the causal mechanism rather than to make a substantive claim about a real dataset.
+
+## Learning goals
+
+By the end of the lab, you should be able to:
+
+- recognize a collider in a DAG;
+- explain why conditioning on a collider opens a non-causal path;
+- identify sample selection, attrition, and bad proxies as special cases of collider bias;
+- understand why a pre-treatment variable can still be dangerous to control for;
+- compare naive, selected, and adjusted estimators in simulated data.
+
+## A helper function for model summaries
+
+```{r helper-functions}
+extract_term <- function(model, term) {
+  s <- coef(summary(model))
+  tibble(
+    term = term,
+    estimate = unname(s[term, "Estimate"]),
+    std.error = unname(s[term, "Std. Error"])
+  )
+}
+```
+
+# 1. Why are colliders problematic?
+
+We start with a simple admissions-style collider:
+
+- `math` and `reading` are independent in the applicant pool;
+- both increase the probability of being `admitted`;
+- we then compare the full sample with the admitted-only sample.
+
+DAG:
+
+```text
+math  -> admitted <- reading
+```
+
+## 1.1 Simulate the full applicant pool
+
+```{r collider-warmup-data}
+n <- 5000
+
+math <- rnorm(n)
+reading <- rnorm(n)
+admission_score <- math + reading + rnorm(n, sd = 0.7)
+admitted <- admission_score > quantile(admission_score, 0.70)
+
+applicants <- tibble(
+  math = math,
+  reading = reading,
+  admitted = admitted
+)
+
+applicants %>%
+  summarise(
+    corr_full = cor(math, reading),
+    corr_admitted = cor(math[admitted], reading[admitted])
+  ) %>%
+  kable(digits = 3, caption = "Correlation before and after conditioning on the collider")
+```
+
+## 1.2 Visualize the induced association
+
+```{r collider-warmup-plot}
+plot_df <- bind_rows(
+  applicants %>%
+    mutate(
+      sample = "Full applicant pool",
+      status = if_else(admitted, "Admitted", "Not admitted")
+    ),
+  applicants %>%
+    filter(admitted) %>%
+    mutate(
+      sample = "Admitted only",
+      status = "Admitted"
+    )
+)
+
+ggplot(plot_df, aes(x = math, y = reading, color = status)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(aes(group = 1), method = "lm", se = FALSE, color = "black") +
+  facet_wrap(~ sample) +
+  scale_color_manual(values = c("Admitted" = "steelblue", "Not admitted" = "tomato")) +
+  labs(
+    title = "Conditioning on admission induces association",
+    subtitle = "The two skills are independent in the full pool but negatively related among admits",
+    x = "Math score",
+    y = "Reading/Writing score",
+    color = "Admission status"
+  )
+```
+
+## 1.3 Compare a naive regression across samples
+
+```{r collider-warmup-models}
+model_full <- lm(reading ~ math, data = applicants)
+model_admitted <- lm(reading ~ math, data = filter(applicants, admitted))
+
+bind_rows(
+  extract_term(model_full, "math") %>% mutate(model = "Full applicant pool"),
+  extract_term(model_admitted, "math") %>% mutate(model = "Admitted only")
+) %>%
+  select(model, estimate, std.error) %>%
+  kable(digits = 3, caption = "Regression slope for reading on math")
+```
+
+### Interpretation
+
+- In the full pool, the slope should be near zero.
+- Among admitted students, the slope becomes negative because **admission is a collider**.
+- Nothing causal links math and reading here; the association is created by selection.
+
+### Reflection questions
+
+1. Why is the path between `math` and `reading` blocked in the full sample?
+   Answer: the path is blocked because `math` and `reading` are independent in the applicant pool, and there is no causal path connecting them.
+2. What exactly changes when we analyze only admitted students?
+   Answer: when we analyze only admitted students, we are conditioning on the collider `admitted`, which opens a non-causal path between `math` and `reading`.
+3. Why is the induced association negative rather than positive?
+   Answer: the induced association is negative because, in the admitted sample, higher math scores are associated with lower reading scores (and vice versa), due to the selection mechanism.
+
+# 2. Problems that are just collider bias
+
+This section turns the abstract collider into three applied problems:
+
+1. sample selection / missing data;
+2. attrition;
+3. bad proxies.
+
+## 2.1 Sample selection / missing data: the Billboard example
+
+The lecture uses a music example:
+
+- `popularity`
+- `critical_rating`
+- `on_billboard`
+
+DAG:
+
+```text
+popularity -> on_billboard <- critical_rating
+```
+
+The idea is simple: if we only analyze albums that make it onto the Billboard charts, then our dataset has already conditioned on a collider.
+
+### Simulate albums
+
+```{r billboard-data}
+n <- 8000
+
+albums <- tibble(
+  popularity = as.numeric(scale(rnorm(n))),
+  critical_rating = as.numeric(scale(rnorm(n)))
+) %>%
+  mutate(
+    billboard_score = 0.9 * popularity + 0.9 * critical_rating + rnorm(n, sd = 1),
+    on_billboard = billboard_score > quantile(billboard_score, 0.70)
+  )
+
+albums %>%
+  summarise(
+    corr_full = cor(popularity, critical_rating),
+    corr_billboard = cor(popularity[on_billboard], critical_rating[on_billboard])
+  ) %>%
+  kable(digits = 3, caption = "Popularity and critical rating in the full population vs. charted albums")
+```
+
+### Plot full population vs. selected sample
+
+```{r billboard-plot}
+plot_albums <- bind_rows(
+  albums %>%
+    mutate(
+      sample = "All albums",
+      status = if_else(on_billboard, "Billboard", "Not Billboard")
+    ),
+  albums %>%
+    filter(on_billboard) %>%
+    mutate(
+      sample = "Only Billboard albums",
+      status = "Billboard"
+    )
+)
+
+ggplot(plot_albums, aes(x = popularity, y = critical_rating, color = status)) +
+  geom_point(alpha = 0.20) +
+  geom_smooth(aes(group = 1), method = "lm", se = FALSE, color = "black") +
+  facet_wrap(~ sample) +
+  scale_color_manual(values = c("Billboard" = "steelblue", "Not Billboard" = "tomato")) +
+  labs(
+    title = "Sample selection can create a false trade-off",
+    x = "Popularity",
+    y = "Critical rating",
+    color = "Album status"
+  )
+```
+
+### Compare regression slopes
+
+```{r billboard-models}
+billboard_full <- lm(critical_rating ~ popularity, data = albums)
+billboard_selected <- lm(critical_rating ~ popularity, data = filter(albums, on_billboard))
+
+bind_rows(
+  extract_term(billboard_full, "popularity") %>% mutate(model = "All albums"),
+  extract_term(billboard_selected, "popularity") %>% mutate(model = "Only Billboard albums")
+) %>%
+  select(model, estimate, std.error) %>%
+  kable(digits = 3, caption = "Estimated relationship between popularity and critical rating")
+```
+
+### Interpretation
+
+A selected sample can manufacture a relationship that is weak or absent in the full population. Here, popularity and critical acclaim look like substitutes only because we restricted the analysis to albums that passed through the selection process.
+
+### Questions
+
+1. In this example, where does the conditioning happen: in the regression, or in the dataset itself?
+   Answer: the conditioning happens in the dataset itself, because we are only analyzing albums that made it onto the Billboard charts. 
+   The regression is then run on this already selected sample, which has induced a correlation between popularity and critical rating.
+2. What would happen if we only had Billboard albums and forgot about the selection process?
+   Answer: if we only had Billboard albums and forgot about the selection process, we would incorrectly conclude that popularity and critical rating are negatively correlated, when in fact they are positively correlated in the full population.   
+
+## 2.2 Attrition bias
+
+Now we simulate an experiment or panel study where:
+
+- `D` = treatment;
+- `X` = a baseline risk factor;
+- `Y` = outcome;
+- `observed` = whether the respondent remains in the sample.
+
+We build attrition so that treatment and the risk factor both affect whether the outcome is observed.
+
+### Simulate attrition
+
+```{r attrition-data}
+n <- 10000
+
+attrition_df <- tibble(
+  X = rnorm(n),
+  D = rbinom(n, size = 1, prob = 0.5)
+) %>%
+  mutate(
+    Y = 2 * D + 1.5 * X + rnorm(n),
+    p_dropout = plogis(-0.5 + 0.9 * D + 0.9 * X),
+    dropout = rbinom(n, size = 1, prob = p_dropout),
+    observed = 1 - dropout
+  )
+
+attrition_df %>%
+  summarise(
+    retention_rate = mean(observed),
+    retention_control = mean(observed[D == 0]),
+    retention_treated = mean(observed[D == 1])
+  ) %>%
+  kable(digits = 3, caption = "Retention rates")
+```
+
+### Estimate the treatment effect under different decisions
+
+```{r attrition-models}
+true_tau <- 2 # The true effect of D on Y in the data-generating process, computed from the simulation code above (Y = 2 * D + 1.5 * X + noise)
+
+m_full <- lm(Y ~ D, data = attrition_df)
+m_cc_naive <- lm(Y ~ D, data = filter(attrition_df, observed == 1))
+m_cc_adjusted <- lm(Y ~ D + X, data = filter(attrition_df, observed == 1))
+
+bind_rows(
+  extract_term(m_full, "D") %>% mutate(model = "Full sample (no attrition problem)", true_effect = true_tau),
+  extract_term(m_cc_naive, "D") %>% mutate(model = "Observed cases only", true_effect = true_tau),
+  extract_term(m_cc_adjusted, "D") %>% mutate(model = "Observed cases + adjust for X", true_effect = true_tau)
+) %>%
+  mutate(bias = estimate - true_effect) %>%
+  select(model, estimate, std.error, true_effect, bias) %>%
+  kable(digits = 3, caption = "Attrition can open a collider path")
+```
+
+### Interpretation
+
+- In the full sample, randomization keeps `D` independent of `X`, so the estimate is close to the true effect.
+- Among observed cases only, selection opens the path `D -> observed <- X -> Y`, which creates bias.
+- If `X` is observed and we control for it, we can block that path again.
+
+### Questions
+
+1. Why is attrition not automatically a problem in every study?
+   Answer: attrition is only a problem if it is related to both the treatment and the outcome (through the confounder `X`), which creates a collider structure. 
+   If attrition were random or only related to one of those factors, it would not necessarily bias the estimate.
+2. In this simulation, what makes attrition informative rather than harmless?
+    Answer: attrition is informative because it depends on both the treatment (`D`) and the baseline risk factor (`X`), which also affects the outcome (`Y`). 
+    This creates a collider structure where conditioning on being observed opens a non-causal path between `D` and `Y` through `X`.
+3. Why does adjusting for `X` help here?
+    Answer: adjusting for `X` helps because it blocks the non-causal path that was opened by conditioning on being observed. 
+    By controlling for `X`, we can isolate the direct effect of `D` on `Y` without the bias introduced by the collider structure.
+
+## 2.3 Bad proxies
+
+The lecture uses this example:
+
+- `S` = schooling;
+- `W` = wages;
+- `U` = ability (unobserved);
+- `T` = later test score.
+
+The bad proxy problem arises because `T` is affected by both schooling and ability.
+
+To make the contrast clearer, we also create a **good proxy**:
+
+- `Q_pre` = an early test score that is affected by ability but not by later schooling.
+
+### Simulate a good and a bad proxy
+
+```{r proxy-data}
+n <- 12000
+
+proxy_df <- tibble(
+  U = rnorm(n)
+) %>%
+  mutate(
+    S = 0.8 * U + rnorm(n),
+    W = 1.0 * S + 1.2 * U + rnorm(n),
+    Q_pre = 1.0 * U + rnorm(n),
+    T_post = 1.5 * S + 1.5 * U + rnorm(n, sd = 0.6)
+  )
+```
+
+### Compare estimators
+
+```{r proxy-models}
+true_tau <- 1
+
+m_naive <- lm(W ~ S, data = proxy_df)
+m_oracle <- lm(W ~ S + U, data = proxy_df)
+m_good_proxy <- lm(W ~ S + Q_pre, data = proxy_df)
+m_bad_proxy <- lm(W ~ S + T_post, data = proxy_df)
+
+bind_rows(
+  extract_term(m_naive, "S") %>% mutate(model = "Naive: no controls", true_effect = true_tau),
+  extract_term(m_oracle, "S") %>% mutate(model = "Oracle: control for true ability U", true_effect = true_tau),
+  extract_term(m_good_proxy, "S") %>% mutate(model = "Good proxy: early test Q_pre", true_effect = true_tau),
+  extract_term(m_bad_proxy, "S") %>% mutate(model = "Bad proxy: later test T_post", true_effect = true_tau)
+) %>%
+  mutate(bias = estimate - true_effect) %>%
+  select(model, estimate, std.error, true_effect, bias) %>%
+  kable(digits = 3, caption = "Good and bad proxies do very different things")
+```
+
+### Interpretation
+
+- The naive model is biased because ability confounds schooling and wages.
+- The oracle model recovers the true effect because it conditions on the real confounder.
+- The good proxy reduces bias because it captures part of ability.
+- The bad proxy can create collider bias because `T_post` is itself caused by both schooling and ability.
+
+### Questions
+
+1. Why is `Q_pre` a better control than `T_post`?
+    Answer: `Q_pre` is a better control because it is only affected by the unobserved ability `U` and not by the treatment `S`. 
+    This means that controlling for `Q_pre` helps to block the confounding path without introducing collider bias. 
+    In contrast, `T_post` is affected by both `S` and `U`, so controlling for it opens a non-causal path between `S` and `W` through `T_post`, which can bias the estimate.
+2. What path is opened when we condition on `T_post`?
+    Answer: When we condition on `T_post`, we open a non-causal path between `S` and `W` through `T_post`.
+3. Why is "proxy" not a purely statistical label, but a causal one?
+    Answer: "Proxy" is not a purely statistical label but a causal one because it refers to a variable that is used to represent or substitute for a causal factor (like ability) that is not directly observable. 
+    The effectiveness of a proxy in reducing bias depends on its causal relationship with the treatment and outcome variables, not just its correlation with the unobserved confounder.
+
+# 3. M-bias
+
+We will do this in two steps:
+
+1. a **pure M-bias** example, where adjustment creates bias;
+2. a **trade-off** example, inspired by the Ding & Miratrix discussion, where adjustment can reduce one bias while creating another.
+
+## 3.1 Pure M-bias
+
+In the pure version, the true causal effect of `D` on `Y` is 3.
+
+DAG:
+
+If we do **not** condition on `X`, the path between `D` and `Y` is blocked at the collider.
+If we **do** condition on `X`, we open the path `D <- U1 -> X <- U2 -> Y`.
+
+### Simulate pure M-bias
+
+```{r pure-mbias-data}
+n <- 50000
+
+m_df <- tibble(
+  U1 = rnorm(n),
+  U2 = rnorm(n)
+) %>%
+  mutate(
+    X = 1.2 * U1 + 1.2 * U2 + rnorm(n),
+    D = 1.0 * U1 + rnorm(n),
+    Y = 3 * D + 1.0 * U2 + rnorm(n)
+  )
+
+m_unadjusted <- lm(Y ~ D, data = m_df)
+m_adjusted <- lm(Y ~ D + X, data = m_df)
+
+bind_rows(
+  extract_term(m_unadjusted, "D") %>% mutate(model = "Unadjusted", true_effect = 3),
+  extract_term(m_adjusted, "D") %>% mutate(model = "Adjusted for X", true_effect = 3)
+) %>%
+  mutate(bias = estimate - true_effect) %>%
+  select(model, estimate, std.error, true_effect, bias) %>%
+  kable(digits = 3, caption = "Pure M-bias: controlling for X can create bias")
+```
+
+### Interpretation
+
+This is the cleanest demonstration of the danger:
+
+- without adjustment, the treatment effect estimate is close to zero;
+- after conditioning on `X`, a non-causal path opens and the estimate moves away from zero.
+
+## 3.2 A Ding & Miratrix-inspired trade-off simulation
+
+The lecture cites Ding & Miratrix when asking whether conditioning on `X` makes sense. The point is not that adjustment is always wrong, but that it can involve a **trade-off**.
+
+We simulate a setting in which `X` plays two roles at once:
+
+- it is a confounder-like variable because it affects both `D` and `Y`;
+- it is also a collider because it is caused by `U1` and `U2`.
+
+DAG:
+
+### A function to study the trade-off
+
+```{r tradeoff-function}
+simulate_tradeoff <- function(n = 30000,
+                              m_strength = 0.0, # strength of the collider structure (U1, U2 -> X)
+                              beta_x = 0.7, # strength of the confounding structure (X -> D and X -> Y)     
+                              alpha_x = 0.7, # 
+                              tau = 1.0) {
+  U1 <- rnorm(n)
+  U2 <- rnorm(n)
+
+  X <- m_strength * U1 + m_strength * U2 + rnorm(n)
+  D <- beta_x * X + 0.8 * U1 + rnorm(n)
+  Y <- tau * D + alpha_x * X + 0.8 * U2 + rnorm(n)
+
+  est_unadjusted <- coef(lm(Y ~ D))["D"]
+  est_adjusted <- coef(lm(Y ~ D + X))["D"]
+
+  tibble(
+    m_strength = m_strength,
+    model = c("Unadjusted", "Adjusted for X"),
+    estimate = c(est_unadjusted, est_adjusted),
+    true_effect = tau,
+    bias = estimate - true_effect
+  )
+}
+```
+
+### Run the sensitivity exercise
+
+```{r tradeoff-grid}
+grid_vals <- seq(0, 1.2, by = 0.1)
+tradeoff_results <- map_dfr(grid_vals, ~ simulate_tradeoff(beta_x = 7, alpha_x = 0.7, tau = 1, m_strength = .x))
+
+tradeoff_results %>%
+  kable(digits = 3, caption = "First rows of the trade-off simulation results")
+```
+
+### Plot the bias of the adjusted and unadjusted estimators
+
+```{r tradeoff-plot}
+ggplot(tradeoff_results, aes(x = m_strength, y = bias, color = model)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Adjustment can help or hurt depending on the strength of the collider structure",
+    subtitle = "A simple sensitivity exercise inspired by the M-bias / butterfly-bias trade-off",
+    x = "Strength of U1, U2 -> X",
+    y = "Bias in the estimated effect of D on Y",
+    color = NULL
+  )
+```
+
+### Interpretation
+
+- Collider structure means that adjusting for `X` can create bias, and the strength of the collider structure depends on how strongly `U1` and `U2` affect `X`. 
+- When the collider structure is weak, adjusting for `X` may help because it blocks confounding through `X`.
+- As the collider structure gets stronger, adjusting for `X` opens a more important non-causal path.
+- There is no automatic rule that says “always adjust” or “never adjust”. It depends on the specific causal structure (the functional form) and the relative strength of the confounding and collider paths. 
+- IN THIS EXAMPLE: When beta_x is large and as m_strength increases, the bias from adjusting for X can become larger than the bias from not adjusting, which is why the adjusted estimator can perform worse than the unadjusted one in some cases.
+- IN THIS EXAMPLE: When alpha_x 
+### Questions
+
+1. Why does the relative performance of the adjusted estimator change as `m_strength` increases?
+    Answer: as `m_strength` increases, the collider bias from adjusting for `X` becomes stronger, while the confounding bias from not adjusting for `X` may not change as much.
+2. What exactly is the trade-off in this simulation?
+    Answer: the trade-off is between reducing confounding bias by adjusting for `X` and introducing collider bias by adjusting for `X`.
+3. How does this section change the rule of thumb “control for all pre-treatment variables”?
+    Answer: it shows that the rule of thumb is not universally valid, and that we need to consider the full DAG and the specific causal structure of the problem before deciding whether to adjust for a variable.
+
+# 4. Wrap-up
+
+This lab showed three increasingly demanding lessons:
+
+1. **Collider conditioning creates association** even when no causal path exists.
+2. **Sample selection, attrition, and bad proxies** are often just collider bias under different names.
+3. **M-bias** shows why covariate adjustment must be guided by the full DAG, not by a mechanical rule.
+
