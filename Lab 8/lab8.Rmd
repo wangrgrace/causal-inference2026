@@ -1,0 +1,541 @@
+---
+title: "Lab 8: Principal Stratification and Instrumental Variables"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+```
+
+# Learning objectives
+
+By the end of this lab, you should be able to:
+
+1. Distinguish **assignment** from **treatment uptake** in a randomized encouragement design.
+2. Define the principal strata: **compliers, never-takers, always-takers, and defiers**.
+3. Estimate and interpret the **first stage**, **reduced form**, **Wald estimator**, and **2SLS estimate**.
+4. Explain why the IV estimate identifies a **local** causal effect rather than the ATE for everyone.
+5. Reflect on the assumptions behind IV and principal stratification in a real political science application.
+
+# The empirical case
+
+This lab is based on **Albertson & Lawrence (2009)**, who studied whether exposure to an educational television debate affected political attitudes and knowledge around **California Proposition 209**.
+
+The key feature of the design is that respondents were **randomly encouraged** to watch a Fox debate on affirmative action, but not everyone who received encouragement actually watched. This creates a classic setting with:
+
+- an **instrument**: encouragement to watch the debate,
+- an **endogenous treatment**: actually watching the debate,
+- outcomes related to political attitudes and information.
+
+That is why this paper is a good bridge between **instrumental variables** and **principal stratification**.
+
+## Main variables in this lab
+
+- `conditn`: randomized encouragement to watch the debate (instrument, (Z))
+- `watchpro`: actually watched the debate (treatment, (D))
+- `support`: support for Proposition 209 (main outcome, (Y))
+- `infopro`: how informed respondents felt about Proposition 209 (extension outcome)
+
+# Packages and data
+
+## Install packages if needed
+
+Run this once if you do not yet have the packages installed.
+
+```{r install-packages, eval=FALSE}
+install.packages(c("ivdesc", "ivreg", "dplyr", "ggplot2", "knitr"))
+```
+
+## Load packages and data
+
+```{r load-packages-data}
+library(ivdesc)
+library(ivreg)
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+data("FoxDebate", package = "ivdesc")
+
+fd <- FoxDebate
+```
+
+# Causal setup: noncompliance and principal strata
+
+Let:
+
+- (Z_i) be encouragement assignment,
+- (D_i) be actual viewing,
+- (Y_i) be the outcome of interest.
+
+Because not everyone complies with assignment, each unit can be thought of as belonging to a **principal stratum** defined by the pair ((D_i(1), D_i(0))):
+
+- **Compliers**: (D_i(1)=1), (D_i(0)=0)
+- **Always-takers**: (D_i(1)=1), (D_i(0)=1)
+- **Never-takers**: (D_i(1)=0), (D_i(0)=0)
+- **Defiers**: (D_i(1)=0), (D_i(0)=1)
+
+These groups are **not directly observed**. Principal stratification gives us the language to describe them, while IV gives us a way to estimate a causal effect for one of them: the **compliers**.
+
+## Pair discussion
+
+- In one or two sentences, explain why comparing people who watched the debate to people who did not watch it is **not automatically causal**.
+- Compare your answers with a partner. What kinds of people might choose to watch the debate even without encouragement?
+
+# Descriptive analysis
+
+## Assignment and uptake
+
+```{r assignment-uptake-table}
+assignment_uptake <- fd %>%
+  summarise(
+    n = n(),
+    encouraged_rate = mean(conditn, na.rm = TRUE),
+    watched_rate = mean(watchpro, na.rm = TRUE)
+  )
+
+kable(assignment_uptake, digits = 3)
+```
+
+```{r uptake-by-assignment}
+uptake_by_assignment <- fd %>%
+  group_by(conditn) %>%
+  summarise(
+    n = n(),
+    watch_rate = mean(watchpro, na.rm = TRUE)
+  ) %>%
+  mutate(encouragement = ifelse(conditn == 1, "Encouraged", "Not encouraged"))
+
+kable(uptake_by_assignment, digits = 3)
+```
+
+```{r plot-first-stage-descriptive}
+ggplot(uptake_by_assignment, aes(x = encouragement, y = watch_rate)) +
+  geom_col(width = 0.6) +
+  labs(
+    title = "Watching the debate by encouragement status",
+    x = NULL,
+    y = "Proportion who watched"
+  ) +
+  ylim(0, 1) +
+  theme_minimal()
+```
+
+## Outcome summaries
+
+```{r outcome-summaries}
+fd %>%
+  summarise(
+    mean_support = mean(support, na.rm = TRUE),
+    mean_infopro = mean(infopro, na.rm = TRUE)
+  ) %>%
+  kable(digits = 3)
+```
+
+```{r support-by-z}
+fd %>%
+  group_by(conditn) %>%
+  summarise(mean_support = mean(support, na.rm = TRUE)) %>%
+  mutate(encouragement = ifelse(conditn == 1, "Encouraged", "Not encouraged")) %>%
+  kable(digits = 3)
+```
+
+```{r support-by-d}
+fd %>%
+  group_by(watchpro) %>%
+  summarise(mean_support = mean(support, na.rm = TRUE)) %>%
+  mutate(watched = ifelse(watchpro == 1, "Watched", "Did not watch")) %>%
+  kable(digits = 3)
+```
+
+## Quick interpretation
+
+- Look at the difference in average support by `watchpro` and by `conditn`. Which comparison looks more causal, and why?
+- Why is the comparison by `watchpro` likely biased? What does the comparison by `conditn` give us?
+
+# Step 1: The first stage
+
+The **first stage** asks whether encouragement changed actual viewing.
+
+```{r first-stage-simple}
+m_first <- lm(watchpro ~ conditn, data = fd)
+summary(m_first)
+```
+
+The coefficient on `conditn` is the causal effect of encouragement on the probability of actually watching the debate.
+
+Under the IV assumptions, this quantity is also closely related to the share of **compliers** in the sample.
+
+- Now, interpret the coefficient on `conditn` from the first-stage model in plain language.
+
+Use the following sentence starter:
+
+> Being assigned to encouragement changes the probability of watching the debate by approximately `___` percentage points.
+
+# Step 2: The reduced form / ITT
+
+The **reduced form** estimates the effect of the instrument on the outcome.
+
+We begin with `support` as the main outcome.
+
+```{r reduced-form-support}
+m_rf_support <- lm(support ~ conditn, data = fd)
+summary(m_rf_support)
+```
+
+This is the **intention-to-treat (ITT)** effect of encouragement on support for Proposition 209.
+The coefficient on `conditn` captures how much support changes when people are encouraged to watch, regardless of whether they actually watch.
+
+## Discussion ITT
+
+If encouragement affects the outcome only through viewing the debate, why might the ITT effect be smaller in magnitude than the effect of actually viewing?
+
+# Step 3: The Wald estimator by hand
+
+For a binary instrument and binary treatment, the simple Wald estimator is:
+
+LATE = (E[Y | Z=1] - E[Y | Z=0]) / (E[D | Z=1] - E[D | Z=0])  
+
+It can be thought as the effect of encouragement on the outcome (the reduced form) scaled by how much encouragement changes treatment uptake (the first stage).
+
+In regression language, it is the **reduced-form coefficient** divided by the **first-stage coefficient**.
+
+```{r wald-support}
+wald_support <- coef(m_rf_support)["conditn"] / coef(m_first)["conditn"]
+wald_support
+```
+
+Interpretation of the Wald estimate:
+> The Local Average Treatment Effect (LATE) of watching the debate on support for Proposition 209 is approximately -1.2 percentage points. 
+This means that for the subgroup of compliers, who watched the debate because they were encouraged, watching the debate caused a change in support of -1.2 percentage points.
+
+## Example for the extension outcome (`infopro`)
+
+```{r exercise-wald-infopro, eval=FALSE}
+m_rf_info <- lm(infopro ~ conditn, data = fd)
+m_first_info <- lm(watchpro ~ conditn, data = fd)
+wald_info <- coef(m_rf_info)["conditn"] / coef(m_first_info)["conditn"]
+wald_info
+```
+
+## Wald estimation discussion
+
+- Why does dividing the reduced form by the first stage recover an effect for compliers rather than for everybody?
+
+# Step 4: Naive OLS vs IV
+
+A naive regression compares people who watched the debate to people who did not.
+
+```{r naive-ols-support}
+m_ols_support <- lm(support ~ watchpro, data = fd)
+summary(m_ols_support)
+```
+
+Now estimate the IV model using `conditn` as an instrument for `watchpro`.
+
+```{r iv-support-simple}
+m_iv_support <- ivreg(support ~ watchpro | conditn, data = fd)
+summary(m_iv_support, diagnostics = TRUE)
+```
+
+## Compare the three quantities
+
+```{r compare-estimates-simple}
+comparison_simple <- data.frame(
+  estimate = c("Naive OLS: Y ~ D",
+               "Reduced form / ITT: Y ~ Z",
+               "First stage / compliance: D ~ Z",
+               "Manual Wald",
+               "Wald / IV (simple)"),
+  value = c(
+    coef(m_ols_support)["watchpro"],
+    coef(m_rf_support)["conditn"],
+    coef(m_first)["conditn"],
+    wald_support,
+    coef(m_iv_support)["watchpro"]
+  )
+)
+
+kable(comparison_simple, digits = 3)
+```
+
+**Small groups.** Why are these five estimates different? Which one has a causal interpretation under the IV assumptions?
+
+# Step 5: Add covariates
+
+The core IV logic comes from the randomized encouragement. Still, we can add pre-treatment covariates to improve precision.
+
+We will use the following covariates:
+
+- `partyid` (party identification)
+- `pnintst` (political interest)
+- `watchnat` (watches national news)
+- `educad` (education)
+- `readnews` (reads news)
+- `gender` (gender)
+- `income` (income)
+- `white` (race)
+
+Because `ivreg()` requires exogenous covariates to appear on both sides of the instrument formula, the model looks like this:
+
+```{r analysis-data-support}
+fd_support <- fd %>%
+  select(support, watchpro, conditn, partyid, pnintst, watchnat, educad,
+         readnews, gender, income, white) %>%
+  filter(complete.cases(.))
+
+nrow(fd_support)
+```
+
+```{r adjusted-ols-support}
+m_ols_support_adj <- lm(
+  support ~ watchpro + partyid + pnintst + watchnat + educad +
+    readnews + gender + income + white,
+  data = fd_support
+)
+
+summary(m_ols_support_adj)
+```
+
+```{r adjusted-iv-support}
+m_iv_support_adj <- ivreg(
+  support ~ watchpro + partyid + pnintst + watchnat + educad +
+    readnews + gender + income + white |
+    conditn + partyid + pnintst + watchnat + educad +
+    readnews + gender + income + white,
+  data = fd_support
+)
+
+dim(fd)
+nobs(m_iv_support_adj)
+summary(m_iv_support_adj, diagnostics = TRUE)
+```
+
+```{r adjusted-comparison}
+comparison_adjusted <- data.frame(
+  estimate = c("Adjusted OLS", "Not adjusted OLS", "Adjusted IV", "Not adjusted IV"),
+  value = c(
+    coef(m_ols_support_adj)["watchpro"],
+    coef(m_ols_support)["watchpro"],
+    coef(m_iv_support_adj)["watchpro"],
+    coef(m_iv_support)["watchpro"]
+  )
+)
+
+kable(comparison_adjusted, digits = 3)
+```
+
+## Reflection on covariates
+
+- Did adding covariates substantially change the IV estimate? Why might covariates matter less for identification here than in a purely observational design?
+
+# Step 6: Principal stratification interpretation
+
+The IV estimate is not the treatment effect for all respondents. Under the usual assumptions, it is the **Local Average Treatment Effect (LATE)**, also called the **Complier Average Causal Effect (CACE)**.
+
+That means:
+
+- the estimate applies to people whose viewing behavior was changed by encouragement,
+- not to always-takers,
+- not to never-takers,
+- and not to the full sample as a whole.
+
+This is the connection to **principal stratification**: IV identifies a causal effect for one latent principal stratum, namely the **compliers**.
+
+## Short discussion
+
+- How would you explain the IV estimate to a non-technical audience? What does it tell us about the effect of watching the debate on support for Proposition 209?
+>The IV estimate tells us how **encouragement** to watch the debate affected the outcome by increasing actual watching among some respondents. 
+Under the IV assumptions, this estimate is interpreted as the **causal effect of watching for the compliers**, meaning the people who watched only because they were encouraged. 
+It does not describe the effect for everyone in the sample, but specifically for those whose behavior changed in response to encouragement.
+
+# Step 7: Profiling compliers with `ivdesc`
+
+One advantage of the `ivdesc` package is that it lets us describe the covariate profile of the latent subpopulations (e.g., compliers, always-takers, never-takers).
+
+Below we use `readnews` as an example covariate.
+
+```{r ivdesc-readnews}
+profile_readnews <- with(fd, ivdesc(X = readnews, D = watchpro, Z = conditn, boot = FALSE))
+profile_readnews_df <- as.data.frame(profile_readnews)
+profile_readnews_df
+```
+
+You can repeat this for other covariates such as `partyid`, `watchnat`, or `educad`. 
+You can also write a function to automate this process and create a combined plot of covariate profiles for compliers, always-takers, and never-takers across multiple covariates.
+```{r iv-info-comparison, eval=FALSE}
+profile_iv_var <- function(data, var, D = "watchpro", Z = "conditn", label = NULL) {
+  
+  out_df <- as.data.frame(
+    ivdesc::ivdesc(
+      X = data[[var]],
+      D = data[[D]],
+      Z = data[[Z]],
+      boot = FALSE
+    )
+  )
+  
+  # Check that ivdesc returned the expected structure
+  if (!all(c("mu", "mu_se") %in% names(out_df))) {
+    stop("The ivdesc output does not contain 'mu' and 'mu_se'. Run as.data.frame(ivdesc(...)) and inspect it.")
+  }
+  
+  if (nrow(out_df) != 4) {
+    stop("Expected 4 rows from ivdesc(): Sample, Complier, Never-taker, Always-taker.")
+  }
+  
+  rng <- range(data[[var]], na.rm = TRUE)
+  facet_label <- if (is.null(label)) {
+    paste0(var, " [", round(rng[1], 2), "–", round(rng[2], 2), "]")
+  } else {
+    paste0(label, " [", round(rng[1], 2), "–", round(rng[2], 2), "]")
+  }
+  
+  out_df %>%
+    mutate(
+      group = factor(
+        c("Sample", "Complier", "Never-taker", "Always-taker"),
+        levels = c("Sample", "Complier", "Never-taker", "Always-taker")
+      ),
+      lower = mu - 1.96 * mu_se,
+      upper = mu + 1.96 * mu_se,
+      facet = facet_label
+    ) %>%
+    select(facet, group, mu, mu_se, lower, upper)
+}
+
+profiles <- bind_rows(
+  profile_iv_var(fd, "educad",   label = "Education"),
+  profile_iv_var(fd, "gender",   label = "Female"),
+  profile_iv_var(fd, "income",   label = "Income"),
+  profile_iv_var(fd, "partyid",  label = "Party ID"),
+  profile_iv_var(fd, "pnintst",  label = "Political interest"),
+  profile_iv_var(fd, "readnews", label = "Reads news"),
+  profile_iv_var(fd, "watchnat", label = "Watches national news"),
+  profile_iv_var(fd, "white",    label = "White")
+)
+
+ggplot(profiles, aes(x = mu, y = group)) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0, linewidth = 0.8) +
+  geom_point(size = 2.8) +
+  facet_wrap(~ facet, scales = "free_x", ncol = 3) +
+  labs(
+    title = "Covariate profiles by principal stratum",
+    x = "Mean and 95% confidence interval",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Interpretation of covariate profiles
+
+- Compare the estimated mean of the different covariates for compliers, always-takers, and never-takers.
+
+What does that suggest about **who the compliers are** in this study?
+
+# Step 8: Extension outcome
+
+Now repeat the IV analysis using `infopro` instead of `support`.
+
+```{r analysis-data-info}
+fd_info <- fd %>%
+  select(infopro, watchpro, conditn, partyid, pnintst, watchnat, educad,
+         readnews, gender, income, white) %>%
+  filter(complete.cases(.))
+
+nrow(fd_info)
+```
+
+```{r iv-info-simple}
+m_iv_info <- ivreg(infopro ~ watchpro | conditn, data = fd_info)
+summary(m_iv_info, diagnostics = TRUE)
+```
+
+```{r iv-info-adjusted, eval=FALSE}
+m_iv_info_adj <- ivreg(
+  infopro ~ watchpro + partyid + pnintst + watchnat + educad +
+    readnews + gender + income + white |
+    conditn + partyid + pnintst + watchnat + educad +
+    readnews + gender + income + white,
+  data = fd_info
+)
+
+summary(m_iv_info_adj, diagnostics = TRUE)
+
+# Compare all models (e.g., infopro and support, simple and adjusted) in a single table or plot.
+kable(data.frame(
+  estimate = c("IV (simple) for infopro", "IV (adjusted) for infopro", "IV (simple) for support", "IV (adjusted) for support"),
+  value = c(coef(m_iv_info)["watchpro"], coef(m_iv_info_adj)["watchpro"], coef(m_iv_support)["watchpro"], coef(m_iv_support_adj)["watchpro"])
+), digits = 3)
+```
+
+
+## Group discussion
+
+Do the results look more convincing for `infopro` than for `support`? Why might media exposure affect feeling informed more directly than vote choice or policy support?
+
+# Step 9: Assumptions
+
+IV requires more than random assignment:
+
+## 1. Relevance
+
+The instrument must affect treatment uptake.
+
+- Here: encouragement must increase the probability of watching.
+
+## 2. Independence
+
+The instrument must be as good as randomly assigned.
+
+- Here: this is built into the research design.
+
+## 3. Exclusion restriction
+
+The instrument affects the outcome only through the treatment.
+
+- Here: encouragement should affect attitudes only because it changed viewing behavior.
+
+## 4. Monotonicity
+
+There are no defiers.
+
+- Here: nobody should become *less* likely to watch because they were encouraged.
+
+## Assumptions debate (group discussion)
+
+1. What does this assumptions mean in this study?
+2. Why might them be plausible?
+3. What could threaten them?
+4. If they fail, how would the interpretation of the IV estimate change?
+
+# Final takeaway
+
+This lab shows why **principal stratification** and **instrumental variables** belong together.
+
+- Random encouragement gives us an instrument.
+- Imperfect uptake creates noncompliance.
+- The first stage captures how encouragement changes treatment uptake.
+- The reduced form captures how encouragement changes outcomes.
+- The IV/Wald estimator scales the reduced form by compliance.
+- The result is a causal effect for **compliers**, not for everyone.
+
+That is the core logic of LATE/CACE in randomized encouragement designs.
+

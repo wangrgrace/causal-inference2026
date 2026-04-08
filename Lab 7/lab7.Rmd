@@ -468,8 +468,8 @@ DAG:
 ```{r tradeoff-function}
 simulate_tradeoff <- function(n = 30000,
                               m_strength = 0.0, # strength of the collider structure (U1, U2 -> X)
-                              beta_x = 0.7, # strength of the confounding structure (X -> D and X -> Y)     
-                              alpha_x = 0.7, # 
+                              beta_x = 0.7, # strength of the confounding structure (X -> D)
+                              alpha_x = 0.7, # strength of the confounding structure (X -> Y)
                               tau = 1.0) {
   U1 <- rnorm(n)
   U2 <- rnorm(n)
@@ -495,7 +495,7 @@ simulate_tradeoff <- function(n = 30000,
 
 ```{r tradeoff-grid}
 grid_vals <- seq(0, 1.2, by = 0.1)
-tradeoff_results <- map_dfr(grid_vals, ~ simulate_tradeoff(beta_x = 7, alpha_x = 0.7, tau = 1, m_strength = .x))
+tradeoff_results <- map_dfr(grid_vals, ~ simulate_tradeoff(beta_x = 0.7, alpha_x = 0.7, tau = 1, m_strength = .x))
 
 tradeoff_results %>%
   kable(digits = 3, caption = "First rows of the trade-off simulation results")
