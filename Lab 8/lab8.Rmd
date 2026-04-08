@@ -526,6 +526,24 @@ There are no defiers.
 3. What could threaten them?
 4. If they fail, how would the interpretation of the IV estimate change?
 
+```
+Independence: 
+1. What does this assumptions mean in this study?
+Voters’ responses to encouragement (to watch the debate) are unrelated to whether or not actually receive the encouragement
+
+2. Why might this be plausible?
+Experimenters used randomization, ensured compliers only in the study
+
+3. What could threaten them?
+External factor that influences both the instrument and the treatment
+If there were always- or never-takers, defiers
+E.g., attrition
+
+4. If they fail, how would the interpretation of the IV estimate change?
+Causal interpretation wouldn’t work because the IV estimator assumes compliance
+```
+
+
 # Final takeaway
 
 This lab shows why **principal stratification** and **instrumental variables** belong together.
