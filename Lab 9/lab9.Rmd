@@ -1,0 +1,516 @@
+---
+title: "Lab 9: Multivalued and Continuous Instrumental Variables"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+```
+
+# Learning objectives
+
+By the end of this lab, you should be able to:
+
+1. Explain why the simple binary-IV LATE story does not transfer mechanically to multivalued and continuous instruments.
+2. Estimate and interpret a 2SLS model with a multivalued instrument.
+3. Estimate and interpret a 2SLS model with a continuous instrument.
+4. Use binary thresholding as a practical approximation when you want Wald-style intuition or complier profiling.
+5. Propose a feasible extension of an existing IV paper for a final replication project.
+
+# Why this lab?
+
+Lab 8 focused on the cleanest IV design: a binary instrument, a binary treatment, and a clear complier group. That setup is useful because the Wald estimator has a direct Local Average Treatment Effect (LATE) interpretation.
+
+This week we move one step further. In many empirical applications:
+
+- the instrument has more than two values, or
+- the instrument varies continuously, or
+- the treatment itself is not binary.
+
+Once that happens, the algebra of IV still works, but the interpretation becomes less simple. A 2SLS coefficient is usually a weighted average of different local responses rather than a single binary-treatment LATE.
+
+To keep the intuition from Lab 8 alive, we will combine two ideas:
+
+1. estimate the main multivalued or continuous IV model directly; and
+2. build binary approximations from substantively meaningful thresholds when we want Wald intuition or complier profiling with `ivdesc`.
+
+This makes the lab useful both for understanding the theory and for thinking about realistic final replication projects.
+
+# Packages
+
+## Install packages if needed
+
+```{r install-packages, eval=FALSE}
+install.packages(c("dplyr", "ggplot2", "ivreg", "ivdesc", "knitr", "micsr"))
+```
+
+## Load packages
+
+```{r load-packages}
+library(dplyr)
+library(ggplot2)
+library(ivreg)
+library(ivdesc)
+library(knitr)
+library(micsr)
+
+theme_set(theme_minimal())
+```
+
+## Helper functions
+
+```{r helper-functions}
+extract_term <- function(model, term, label) {
+  s <- coef(summary(model))
+  tibble(
+    model = label,
+    term = term,
+    estimate = unname(s[term, "Estimate"]),
+    std.error = unname(s[term, "Std. Error"])
+  )
+}
+
+profile_binary_iv <- function(data, var, D, Z, label = var) {
+  out <- as.data.frame(
+    ivdesc::ivdesc(
+      X = data[[var]],
+      D = data[[D]],
+      Z = data[[Z]],
+      boot = FALSE
+    )
+  )
+
+  out %>%
+    mutate(
+      group = factor(
+        c("Sample", "Complier", "Never-taker", "Always-taker"),
+        levels = c("Sample", "Complier", "Never-taker", "Always-taker")
+      ),
+      variable = label,
+      lower = mu - 1.96 * mu_se,
+      upper = mu + 1.96 * mu_se
+    ) %>%
+    select(variable, group, mu, mu_se, lower, upper)
+}
+```
+
+# 1. From binary IV to multivalued and continuous IV
+
+The binary IV story from Lab 8 is still the benchmark:
+
+- binary `Z`,
+- binary `D`,
+- Wald = reduced form / first stage,
+- interpretation = LATE for one complier group.
+
+When `Z` is not binary, two important things change.
+
+## Multivalued instrument
+
+If `Z` has several values, 2SLS uses several instrument-induced contrasts at once. Instead of one first-stage coefficient, we now have a *set* of first-stage shifts.
+
+The practical interpretation is:
+
+- 2SLS combines several binary comparisons inside one regression;
+- the estimate is a weighted average of local responses induced by those shifts;
+- there is no single universal complier group unless we impose an extra binary approximation.
+
+## Continuous instrument
+
+If `Z` is continuous, the same idea goes further:
+
+- the first stage is a slope, not a difference in means;
+- the reduced form is also a slope;
+- the just-identified IV estimator is still "reduced form divided by first stage", but the interpretation is no longer "the effect for one complier group."
+
+Following Angrist and Imbens' variable-treatment-intensity logic, the coefficient is better understood as a weighted average of marginal causal responses among units whose treatment is shifted by the instrument.
+
+## Why we will still use binary approximations
+
+Packages such as `ivdesc` are built for the binary-IV, binary-treatment case. That means complier profiling is easiest when we define:
+
+- a binary threshold for the instrument, and
+- a binary threshold for treatment uptake.
+
+This is not the same estimand as the original multivalued or continuous IV design. It is a pedagogical and exploratory approximation that helps us understand *who* is moved by a particular threshold contrast.
+
+# 2. Example 1: Multivalued IV with college proximity
+
+## The empirical case
+
+Our first paper is **Card (1995), "Using Geographical Variation in College Proximity to Estimate the Return to Schooling."**
+
+The key idea is that growing up close to different types of colleges shifts the cost of attending college. We use the `SchoolingReturns` teaching dataset distributed with the `ivreg` package, which is based on Card's study.
+
+This is a good multivalued-IV example because:
+
+- the instrument has more than two values (`nearcollege4 = none, public, private`);
+- the treatment (`education`) is continuous;
+- the dataset is bundled in a CRAN package, so it is reproducible without any external download.
+
+## Main variables
+
+- `nearcollege4`: grew up near no 4-year college, a public 4-year college, or a private 4-year college (multivalued instrument)
+- `education`: years of completed education (endogenous treatment)
+- `wage`: hourly wage in 1976 (outcome)
+- `experience`, `ethnicity`, `smsa`, `south`, `age`: baseline controls used in standard teaching replications
+
+## Load the teaching dataset
+
+```{r card-data}
+data("SchoolingReturns", package = "ivreg")
+
+card <- SchoolingReturns %>%
+  mutate(
+    nearcollege4 = factor(nearcollege4, levels = c("none", "public", "private")),
+    log_wage = log(wage)
+  )
+```
+
+## Descriptive summaries
+
+```{r card-college-summary}
+card %>%
+  group_by(nearcollege4) %>%
+  summarise(
+    n = n(),
+    mean_education = mean(education),
+    mean_wage = mean(wage)
+  ) %>%
+  kable(digits = 3)
+```
+
+```{r card-first-stage-plot}
+card_means <- card %>%
+  group_by(nearcollege4) %>%
+  summarise(
+    mean_education = mean(education),
+    mean_log_wage = mean(log_wage),
+    .groups = "drop"
+  )
+
+ggplot(card_means, aes(x = nearcollege4, y = mean_education, fill = nearcollege4)) +
+  geom_col(width = 0.7, show.legend = FALSE) +
+  labs(
+    title = "Average education by college proximity",
+    subtitle = "College proximity shifts years of schooling",
+    x = NULL,
+    y = "Average years of education"
+  )
+```
+
+## OLS versus multivalued 2SLS
+
+The multivalued IV regression uses `nearcollege4` as a factor instrument. With factor coding, one category is omitted as the baseline and the remaining instrument contrasts are used jointly in 2SLS.
+
+```{r card-models}
+m_ols_card <- lm(
+  log_wage ~ education + poly(experience, 2, raw = TRUE) + ethnicity + smsa + south,
+  data = card
+)
+
+m_first_card <- lm(
+  education ~ nearcollege4 + poly(age, 2, raw = TRUE) + ethnicity + smsa + south,
+  data = card
+)
+
+m_first_restricted_card <- lm(
+  education ~ poly(age, 2, raw = TRUE) + ethnicity + smsa + south,
+  data = card
+)
+
+m_iv_card <- ivreg(
+  log_wage ~ education + poly(experience, 2, raw = TRUE) + ethnicity + smsa + south |
+    nearcollege4 + poly(age, 2, raw = TRUE) + ethnicity + smsa + south,
+  data = card
+)
+```
+
+```{r card-first-stage-test}
+anova(m_first_restricted_card, m_first_card)
+```
+
+```{r card-iv-summary}
+summary(m_iv_card, diagnostics = TRUE)
+```
+
+```{r card-compare}
+bind_rows(
+  extract_term(m_ols_card, "education", "OLS"),
+  extract_term(m_iv_card, "education", "2SLS with multivalued college-proximity instrument")
+) %>%
+  select(model, estimate, std.error) %>%
+  kable(digits = 3)
+```
+
+## Interpretation
+
+This is the key lesson:
+
+- there is **no single Wald ratio** here because `nearcollege4` is not binary;
+- instead, 2SLS combines multiple proximity contrasts at once;
+- the resulting coefficient should be read as a weighted average of education effects induced by college-proximity variation.
+
+## Approximation: recover a binary contrast for complier profiling
+
+To get back to the logic of Lab 8, we can build an exploratory binary approximation:
+
+- define a binary instrument `near4 = 1` for respondents who grew up near any 4-year college;
+- define a binary treatment `some_college = 1` for at least 13 years of schooling.
+
+This creates a *threshold-specific* encouragement design. It is not the same estimand as the full multivalued-IV model, but it gives us an interpretable approximation for profiling compliers.
+
+```{r card-profile-data}
+card_profile <- card %>%
+  mutate(
+    near4 = as.integer(nearcollege4 != "none"),
+    some_college = as.integer(education >= 13),
+    smsa_yes = as.integer(smsa == "yes"),
+    south_yes = as.integer(south == "yes"),
+    afam = as.integer(ethnicity == "afam"),
+    library14_yes = as.integer(library14 == "yes")
+  )
+
+card_profile %>%
+  summarise(
+    n = n(),
+    near_college_share = mean(near4),
+    some_college_share = mean(some_college)
+  ) %>%
+  kable(digits = 3)
+```
+
+```{r card-profile-plot}
+card_profiles <- bind_rows(
+  profile_binary_iv(card_profile, "feducation", "some_college", "near4", "Father's education"),
+  profile_binary_iv(card_profile, "meducation", "some_college", "near4", "Mother's education"),
+  profile_binary_iv(card_profile, "library14_yes", "some_college", "near4", "Library card at 14")
+)
+
+ggplot(card_profiles, aes(x = mu, y = group)) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0, linewidth = 0.8) +
+  geom_point(size = 2.5) +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(
+    title = "Approximate complier profiles for a college-proximity threshold",
+    subtitle = "These profiles use a binary approximation, not the full multivalued-IV estimand",
+    x = "Mean and 95% confidence interval",
+    y = NULL
+  ) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Discussion
+
+1. Why is the multivalued 2SLS estimate not identical to any single binary Wald comparison?
+2. What exactly changes when we collapse `nearcollege4` into a binary college-proximity indicator?
+3. Do the approximate complier profiles suggest that the threshold-specific compliers look different from the sample overall?
+
+## Possible extension for a final replication project
+
+One useful extension is to study **which type of college proximity matters most**.
+
+For example:
+
+- compare public-college proximity to private-college proximity directly;
+- test heterogeneity by family background, race, or region;
+- compare the full multivalued-IV estimate with several binary approximations (`any 4-year college` vs `none`, `public` vs `none`, `private` vs `none`) to show how the implied complier group changes.
+
+# 3. Example 2: Continuous IV with cigarette taxes
+
+## The empirical case
+
+Our second paper uses the birth-weight application from **Mullahy (1997), "Instrumental-Variable Estimation of Count Data Models: Applications to Models of Cigarette Smoking Behavior."**
+
+The dataset in `micsr::birthwt` contains:
+
+- `birthwt`: infant birth weight;
+- `cigarettes`: number of cigarettes smoked per day during pregnancy;
+- `cigtax`: per-pack state excise tax on cigarettes.
+
+This is a useful continuous-IV example because:
+
+- the treatment is continuous (`cigarettes`);
+- the instrument is continuous (`cigtax`);
+- the data are easy to access in R;
+- the topic makes the difference between OLS and IV substantively meaningful.
+
+## Load and inspect the data
+
+```{r bw-data}
+data("birthwt", package = "micsr")
+
+bw <- birthwt %>%
+  mutate(
+    any_smoke = as.integer(cigarettes > 0),
+    high_tax = as.integer(cigtax >= median(cigtax))
+  )
+
+bw %>%
+  summarise(
+    n = n(),
+    mean_birthwt = mean(birthwt),
+    mean_cigarettes = mean(cigarettes),
+    mean_cigtax = mean(cigtax)
+  ) %>%
+  kable(digits = 3)
+```
+
+```{r bw-scatter}
+ggplot(bw, aes(x = cigtax, y = cigarettes)) +
+  geom_point(alpha = 0.25) +
+  geom_smooth(method = "lm", se = FALSE, color = "firebrick") +
+  labs(
+    title = "Continuous first stage: cigarette tax and smoking",
+    x = "Cigarette tax",
+    y = "Cigarettes per day during pregnancy"
+  )
+```
+
+## OLS, reduced form, first stage, and IV
+
+We include a common set of controls:
+
+- `parity`
+- `race`
+- `sex`
+- `edmother`
+- `edfather`
+- `faminc`
+
+```{r bw-models}
+m_ols_bw <- lm(
+  birthwt ~ cigarettes + parity + race + sex + edmother + edfather + faminc,
+  data = bw
+)
+
+m_first_bw <- lm(
+  cigarettes ~ cigtax + parity + race + sex + edmother + edfather + faminc,
+  data = bw
+)
+
+m_rf_bw <- lm(
+  birthwt ~ cigtax + parity + race + sex + edmother + edfather + faminc,
+  data = bw
+)
+
+m_iv_bw <- ivreg(
+  birthwt ~ cigarettes + parity + race + sex + edmother + edfather + faminc |
+    cigtax + parity + race + sex + edmother + edfather + faminc,
+  data = bw
+)
+```
+
+```{r bw-first-stage}
+summary(m_first_bw)
+```
+
+```{r bw-iv-summary}
+summary(m_iv_bw, diagnostics = TRUE)
+```
+
+```{r bw-wald}
+wald_bw <- coef(m_rf_bw)["cigtax"] / coef(m_first_bw)["cigtax"]
+wald_bw
+```
+
+```{r bw-compare}
+bind_rows(
+  extract_term(m_ols_bw, "cigarettes", "OLS"),
+  extract_term(m_iv_bw, "cigarettes", "2SLS"),
+  tibble(
+    model = "Reduced form divided by first stage",
+    term = "cigarettes",
+    estimate = unname(wald_bw),
+    std.error = NA_real_
+  )
+) %>%
+  select(model, estimate, std.error) %>%
+  kable(digits = 3)
+```
+
+## Interpretation
+
+The ratio of reduced form to first stage still reproduces the just-identified IV estimate, but the interpretation is different from the binary-IV case:
+
+- OLS compares mothers with different smoking behavior directly and is likely confounded;
+- IV uses only the smoking variation shifted by cigarette taxes;
+- the coefficient is best understood as a weighted average response among **tax-sensitive smoking margins**, not as a single binary-treatment LATE for one neat complier group.
+
+## Approximation: threshold-specific complier profiling
+
+Again, we can recover Lab-8-style intuition by defining:
+
+- `high_tax = 1` for states above the sample median tax;
+- `any_smoke = 1` for mothers who smoke at all.
+
+That gives a binary threshold contrast. It is an approximation to the original continuous-IV design, but it lets us use `ivdesc` to describe the mothers whose smoking behavior is shifted by this threshold.
+
+```{r bw-profile-plot}
+bw_profiles <- bind_rows(
+  profile_binary_iv(bw, "faminc", "any_smoke", "high_tax", "Family income"),
+  profile_binary_iv(bw, "edmother", "any_smoke", "high_tax", "Mother's education"),
+  profile_binary_iv(bw, "parity", "any_smoke", "high_tax", "Parity")
+)
+
+ggplot(bw_profiles, aes(x = mu, y = group)) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0, linewidth = 0.8) +
+  geom_point(size = 2.5) +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(
+    title = "Approximate complier profiles for a high-tax threshold",
+    subtitle = "This is a binary approximation to a continuous-instrument design",
+    x = "Mean and 95% confidence interval",
+    y = NULL
+  ) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Discussion
+
+1. Why does the ratio-of-slopes algebra still work when `Z` and `D` are continuous?
+2. Why does the interpretation of the IV estimate change even though the algebra looks similar?
+3. How sensitive do you think the complier profile would be to using a different tax threshold?
+
+## Possible extension for a final replication project
+
+A strong extension here is to study **which margin of smoking responds to taxes**.
+
+For example:
+
+- compare the extensive margin (`any_smoke`) to the intensive margin (`cigarettes` among smokers only);
+- test whether the IV estimate differs by maternal education or race;
+- move closer to Mullahy's original contribution by comparing linear 2SLS to a nonlinear count-model specification.
+
+# 4. Final takeaway
+
+The main message from this lab is that the **estimation mechanics of IV generalize more easily than the interpretation**.
+
+- With a binary instrument, LATE and complier profiling are direct.
+- With a multivalued instrument, 2SLS aggregates several local shifts.
+- With a continuous instrument, 2SLS aggregates marginal responses along the treatment margin affected by the instrument.
+- Binary thresholding is often a useful approximation when you want to recover Wald intuition or profile threshold-specific compliers.
+
+That is why multivalued and continuous IV designs are best approached in two steps:
+
+1. estimate the main IV model honestly; and
+2. use binary approximations carefully, and transparently, when they help you understand who is being moved by the instrument.

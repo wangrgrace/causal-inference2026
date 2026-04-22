@@ -1,0 +1,310 @@
+---
+title: "Lab 10: Difference-in-differences"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+```
+
+# Learning objectives
+
+By the end of this lab, you should be able to:
+
+1. Describe the 2×2 Difference-in-Differences (DiD) estimand and the Average Treatment Effect on the Treated (ATT) in this framework.
+2. Compute a DiD estimate from group averages and compare it to the coefficient from a regression with an interaction term.
+3. Explain why the parallel trends and no-anticipation assumptions matter, and how to think about them in an applied case.
+4. Use the Lost-Stats 2×2 DiD example on marijuana legalization and murder rates to connect theory and practice.
+5. Propose feasible extensions of a 2×2 DiD design for class projects.
+
+# Why this lab?
+
+This lab uses a clean 2×2 DiD example from the Lost-Stats classroom page. The example compares murder rates in states that legalized marijuana in 2014 to states that did not, before and after legalization.
+
+That makes the design easy to understand because it has:
+
+- two groups (treated vs control),
+- two periods (pre-2014 vs post-2014), and
+- one treatment event that happens at a single time.
+
+We use this example to build intuition for:
+
+- a cell-means DiD estimate,
+- the equivalent regression formulation, and
+- why the assumptions of **no anticipation** and **parallel trends** are central.
+
+Key points:
+
+- The DiD estimator compares the change in the treated group with the change in the control group.
+- The treated group’s counterfactual is not the observed control mean after treatment; it is the treated group’s pre-post change if it had followed the control trend.
+- The regression formulation uses `treat`, `after`, and their interaction.
+- The main assumptions are:
+  - **Parallel trends**: treated and control groups would have followed the same trend absent treatment.
+  - **No anticipation**: treated units do not start changing outcomes before treatment begins.
+
+# 1. Show data
+
+## Packages
+
+```{r packages}
+install_if_missing <- function(pkgs) {
+  missing <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
+  if (length(missing) > 0) install.packages(missing)
+}
+install_if_missing(c("dplyr", "ggplot2", "broom", "knitr", "readxl", "httr"))
+
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(knitr)
+library(readxl)
+library(httr)
+
+theme_set(theme_minimal())
+```
+
+## Load the dataset
+
+```{r load-data}
+# Lost-Stats 2x2 DiD example with marijuana legalization and murder rates.
+url <- "https://raw.githubusercontent.com/LOST-STATS/LOST-STATS.github.io/master/Model_Estimation/Data/Two_by_Two_Difference_in_Difference/did_crime.xlsx"
+
+temp <- tempfile(fileext = ".xlsx")
+GET(url, write_disk(temp, overwrite = TRUE))
+
+DiD <- read_excel(temp)
+
+DiD <- DiD %>%
+  mutate(
+    after = year >= 2014,
+    treatafter = treat * after
+  )
+
+DiD
+```
+
+## Dataset overview
+
+```{r data-overview}
+DiD %>%
+  summarise(
+    n_obs = n(),
+    n_treated = sum(treat == 1),
+    n_control = sum(treat == 0),
+    years = paste(min(year), max(year), sep = "-")
+  ) %>%
+  kable()
+```
+
+```{r data-glimpse}
+glimpse(DiD)
+```
+
+> **Discussion:** The data are already aggregated at the treated-group level. What are the advantages and disadvantages of working with this collapsed dataset instead of individual-state data?
+
+# 2. Do Diff-in-diff with averages
+
+## Average outcomes by group and period
+
+```{r mean-table}
+means <- DiD %>%
+  group_by(treat, after) %>%
+  summarise(
+    mean_murder = mean(murder, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  )
+
+means %>%
+  mutate(group = case_when(
+    treat == 1 & after == 0 ~ "Treated pre",
+    treat == 1 & after == 1 ~ "Treated post",
+    treat == 0 & after == 0 ~ "Control pre",
+    treat == 0 & after == 1 ~ "Control post",
+    TRUE ~ NA_character_
+  )) %>%
+  select(group, mean_murder, n) %>%
+  kable(digits = 3)
+```
+
+## Hand compute the 2×2 DID estimate
+
+```{r did-averages}
+cell <- means %>%
+  select(treat, after, mean_murder)
+
+mu_T_pre  <- cell$mean_murder[cell$treat == 1 & cell$after == 0]
+mu_T_post <- cell$mean_murder[cell$treat == 1 & cell$after == 1]
+mu_C_pre  <- cell$mean_murder[cell$treat == 0 & cell$after == 0]
+mu_C_post <- cell$mean_murder[cell$treat == 0 & cell$after == 1]
+
+att_avg <- (mu_T_post - mu_T_pre) - (mu_C_post - mu_C_pre) # 
+att_avg
+```
+
+> **Exercise 1:** Interpret the sign of the DID estimate. Does the result suggest that legalization increased or decreased murder rates in treated states relative to control states?
+
+# 3. Then do with regression
+
+## Regression specification
+
+```{r did-regression}
+mod_did <- lm(murder ~ treat * after, data = DiD)
+summary(mod_did)
+
+tidy(mod_did) %>%
+  filter(term == "treat:afterTRUE")
+```
+
+## Regression with a group indicator only
+
+```{r did-regression-group}
+mod_group <- lm(murder ~ treat + after + treatafter, data = DiD)
+summary(mod_group)
+```
+
+> **Discussion:** Why does the interaction term capture the policy effect while the main effects do not?
+
+# 4. Then evaluate no-anticipation
+
+## What no-anticipation means here
+
+No anticipation means that treated states did not change murder rates in expectation of legalization before 2014. In this example, the policy should only affect the post period.
+
+## Discussing the assumption
+
+- What institutional facts would support or undermine no anticipation in this setting?
+- If legalization was widely anticipated, how would that show up in the pre-period?
+
+## Simulation-style thought experiment
+
+```{r no-anticipation-thought}
+# This is a conceptual exercise rather than a formal test.
+# Suppose we pretend the treatment started in 2012 instead of 2014.
+DiD_placebo <- DiD %>%
+  mutate(after_placebo = year >= 2012,
+         treatafter_placebo = treat * after_placebo)
+
+mod_placebo <- lm(murder ~ treat + after_placebo + treatafter_placebo, data = DiD_placebo)
+
+tidy(mod_placebo) %>%
+  filter(term == "treatafter_placebo") %>%
+  transmute(
+    term = "Placebo DiD effect (pretend treatment starts in 2012)",
+    estimate,
+    std.error,
+    p.value,
+    interpretation = case_when(
+      p.value < 0.05 & estimate > 0 ~ "Evidence against no anticipation: treated outcomes rise before the true treatment year",
+      p.value < 0.05 & estimate < 0 ~ "Evidence against no anticipation: treated outcomes fall before the true treatment year",
+      TRUE ~ "No strong evidence of anticipation effects"
+    )
+  ) %>%
+  kable(digits = 3)
+```
+
+> **Exercise 2:** If the placebo coefficient is large, what does that suggest about the no-anticipation assumption? What if it is close to zero?
+
+# 5. Then evaluate parallel trends
+
+## What parallel trends means
+
+Parallel trends means that, without legalization, treated and control states would have experienced the same changes in murder rates between the pre and post periods.
+
+## Discussion questions
+
+- What evidence would make you more comfortable with the parallel trends assumption?
+- What evidence would make you doubt it?
+- How is this dataset limited for testing the assumption?
+
+## Visualizing the trends
+
+```{r parallel-trends-plot}
+DiD %>%
+  mutate(group = if_else(treat == 1, "Treated", "Control")) %>%
+  ggplot(aes(x = year, y = murder, color = group, group = group)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 2014, linetype = "dashed", color = "gray") +
+  labs(
+    x = "Year",
+    y = "Murder rate",
+    color = NULL,
+    title = "Murder rate trends for treated and control groups",
+    subtitle = "Vertical line marks the 2014 legalization year"
+  )
+```
+
+## A simple pre-trend check
+
+```{r parallel-trends-pretreatment-plot}
+pre_period <- DiD %>%
+  filter(year < 2014) %>%
+  mutate(
+    year_centered = year - min(year),
+    group = if_else(treat == 1, "Treated", "Control")
+  )
+
+pre_period %>%
+  ggplot(aes(x = year, y = murder, color = group, group = group)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 3) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = 0.9, linetype = "dotted") +
+  labs(
+    x = "Year",
+    y = "Murder rate",
+    color = NULL,
+    title = "Pre-2014 murder trends",
+    subtitle = "Dotted lines are linear fits estimated only on the pre-treatment period"
+  )
+```
+
+```{r parallel-trends-test}
+pre_period <- DiD %>%
+  filter(year < 2014) %>%
+  mutate(year_centered = year - min(year))
+
+pretrend_mod <- lm(murder ~ treat * year_centered, data = pre_period)
+
+tidy(pretrend_mod) %>%
+  filter(term == "treat:year_centered") %>%
+  transmute(
+    term = "Differential pre-trend (treated x year)",
+    estimate,
+    std.error,
+    p.value,
+    interpretation = if_else(
+      p.value < 0.05,
+      "Evidence against parallel linear pre-trends",
+      "No strong evidence of different linear pre-trends"
+    )
+  ) %>%
+  kable(digits = 3)
+```
+
+This does not prove parallel trends. It is only a diagnostic: failing to reject a differential pre-trend is consistent with the assumption, but it does not guarantee that the treated group would have followed the control trend after 2014 in the absence of treatment.
+
+> **Exercise 3:** Based on the pre-2014 plot and the differential pre-trend estimate, do the treated and control groups look broadly consistent with parallel trends? What caveats should you mention?
+
+
+## Final discussion
+
+- Why is the treatment indicator constant over time for the treated group?
+- What would a 2×2 DiD look like if the outcome were unemployment rather than murder?
+- How would you explain the ATT to a policy audience?
+
+
+

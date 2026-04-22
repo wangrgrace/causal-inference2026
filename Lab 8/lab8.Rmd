@@ -251,7 +251,7 @@ m_iv_support <- ivreg(support ~ watchpro | conditn, data = fd)
 summary(m_iv_support, diagnostics = TRUE)
 ```
 
-## Compare the three quantities
+## Compare the five quantities
 
 ```{r compare-estimates-simple}
 comparison_simple <- data.frame(
