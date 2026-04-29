@@ -151,7 +151,7 @@ mu_T_post <- cell$mean_murder[cell$treat == 1 & cell$after == 1]
 mu_C_pre  <- cell$mean_murder[cell$treat == 0 & cell$after == 0]
 mu_C_post <- cell$mean_murder[cell$treat == 0 & cell$after == 1]
 
-att_avg <- (mu_T_post - mu_T_pre) - (mu_C_post - mu_C_pre) # 
+att_avg <- (mu_T_post - mu_T_pre) - (mu_C_post - mu_C_pre) 
 att_avg
 ```
 

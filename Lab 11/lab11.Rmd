@@ -1,0 +1,364 @@
+---
+title: "Lab 11: Staggered Difference-in-Differences"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+```
+
+# Learning objectives
+
+By the end of this lab, you should be able to:
+
+1. Explain why staggered treatment adoption is more complicated than the 2x2 DiD case.
+2. Estimate a two-way fixed effects DiD model and describe why its weighting scheme can be problematic with staggered adoption.
+3. Use the Goodman-Bacon decomposition to see which comparisons drive a TWFE estimate.
+4. Estimate group-time average treatment effects with a modern staggered-DiD estimator.
+5. Interpret cohort-specific and event-time treatment effects in an applied policy setting.
+6. Propose a feasible extension of a staggered-DiD replication for a final project.
+
+# Why this lab?
+
+Lab 10 used the cleanest DiD setup: one treated group, one control group, one treatment date, and one pre/post comparison. That framework is useful because the identifying logic is transparent.
+
+Many empirical papers are not that clean. Policies are often adopted in different years by different units. Once treatment timing is staggered:
+
+- there is no single 2x2 comparison,
+- some treated units may act as controls for other treated units before they adopt,
+- and a naive two-way fixed effects regression can mix together comparisons that do not match the causal question we want to answer.
+
+This lab uses a substantive example from **Cheng and Hoekstra (2013), "Does Strengthening Self-Defense Law Deter Crime or Escalate Violence? Evidence from Castle Doctrine."** 
+The paper studies whether Castle Doctrine laws increase homicide. The data are available in the `bacondecomp` package, which makes the application easy to replicate in class.
+
+Our plan is:
+
+1. inspect the treatment timing;
+2. estimate a familiar TWFE model;
+3. decompose that TWFE estimate with Goodman-Bacon;
+4. estimate modern staggered-DiD effects with `did::att_gt()`;
+5. discuss what changes in the interpretation.
+
+# 1. Packages and data
+
+## Packages
+
+```{r packages}
+install_if_missing <- function(pkgs) {
+  missing <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
+  if (length(missing) > 0) install.packages(missing)
+}
+
+install_if_missing(c(
+  "dplyr", "ggplot2", "broom", "knitr",
+  "fixest", "did", "bacondecomp"
+))
+
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(knitr)
+library(fixest)
+library(did)
+library(bacondecomp)
+
+theme_set(theme_minimal())
+options(dplyr.summarise.inform = FALSE)
+```
+
+## Load the Castle Doctrine data
+
+The `castle` dataset is a state-year panel from Cheng and Hoekstra's application. The outcome we study is `l_homicide`, the log homicide rate.
+
+```{r load-data}
+data("castle", package = "bacondecomp")
+
+cohorts <- castle %>%
+  group_by(state) %>%
+  summarise(
+    first_treat = as.numeric(if (any(post == 1)) min(year[post == 1]) else 0),
+    ever_treated = first_treat > 0
+  )
+
+castle <- castle %>%
+  left_join(cohorts, by = "state") %>%
+  mutate(
+    treated_now = as.integer(first_treat > 0 & year >= first_treat),
+    cohort = if_else(
+      first_treat == 0,
+      "Never treated",
+      paste("Treat in", first_treat)
+    )
+  )
+
+stopifnot(all(castle$treated_now == castle$post))
+```
+
+## Dataset overview
+
+```{r overview}
+castle %>%
+  summarise(
+    n_obs = n(),
+    n_states = n_distinct(state),
+    first_year = min(year),
+    last_year = max(year),
+    ever_treated_states = n_distinct(state[first_treat > 0]),
+    never_treated_states = n_distinct(state[first_treat == 0])
+  ) %>%
+  kable()
+```
+
+```{r cohort-table}
+cohort_table <- castle %>%
+  distinct(state, first_treat) %>%
+  mutate(
+    cohort = if_else(first_treat == 0, "Never treated", as.character(first_treat))
+  ) %>%
+  count(first_treat, cohort, name = "states") %>%
+  arrange(first_treat == 0, first_treat) %>%
+  mutate(cohort = factor(cohort, levels = cohort)) %>%
+  select(cohort, states)
+
+cohort_table %>% kable()
+```
+
+There are several treatment cohorts rather than one single adoption year. That is exactly why we need a staggered-DiD framework.
+
+## Visualize adoption timing
+
+```{r cohort-plot}
+cohort_table %>%
+  ggplot(aes(x = cohort, y = states, fill = cohort)) +
+  geom_col(show.legend = FALSE, width = 0.7) +
+  labs(
+    title = "Treatment timing is staggered across states",
+    x = "First treatment year",
+    y = "Number of states"
+  )
+```
+
+```{r cohort-trends}
+castle %>%
+  group_by(year, cohort) %>%
+  summarise(mean_l_homicide = mean(l_homicide)) %>%
+  ggplot(aes(x = year, y = mean_l_homicide, color = cohort)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = seq(min(castle$year), max(castle$year), by = 1)) +
+  labs(
+    title = "Average log homicide by treatment cohort",
+    subtitle = "Each line groups states by the year they first adopt Castle Doctrine laws",
+    x = "Year",
+    y = "Mean log homicide",
+    color = NULL
+  )
+```
+
+> **Discussion:** Why is a single pre/post comparison no longer enough once different states adopt in 2005, 2006, 2007, 2008, and 2009?
+
+# 2. Start with a TWFE staggered DiD
+
+A natural first pass is the familiar two-way fixed effects regression:
+
+Y_{st} = alpha_s + lambda_t + beta D_{st} + epsilon_{st}
+
+where:
+
+- (Y_{st}) is the log homicide rate in state (s) and year (t),
+- (D_{st}) equals 1 once a state is exposed to Castle Doctrine,
+- (alpha_s) are state fixed effects,
+- (lambda_t) are year fixed effects.
+
+```{r twfe}
+twfe_mod <- feols(
+  l_homicide ~ treated_now | state + year,
+  data = castle,
+  cluster = ~state
+)
+
+tidy(twfe_mod, conf.int = TRUE) %>%
+  kable(digits = 3)
+```
+
+This coefficient is easy to estimate, but with staggered adoption it is not automatically the clean ATT we want. The reason is that TWFE averages together many implicit 2x2 comparisons.
+
+> **Exercise 1:** The TWFE coefficient is in log points. Is it positive or negative, and what would that imply substantively for homicide after adoption?
+
+# 3. Where does the TWFE estimate come from?
+
+The Goodman-Bacon decomposition breaks the TWFE coefficient into the weighted average of all the 2x2 DiD comparisons inside it.
+
+```{r bacon-decomp}
+bacon_parts <- as.data.frame(
+  bacon(
+    l_homicide ~ treated_now,
+    data = castle,
+    id_var = "state",
+    time_var = "year"
+  )
+)
+
+bacon_summary <- data.frame(
+  type = names(tapply(bacon_parts$weight, bacon_parts$type, sum)),
+  weight = as.numeric(tapply(bacon_parts$weight, bacon_parts$type, sum)),
+  avg_est = as.numeric(
+    tapply(bacon_parts$estimate * bacon_parts$weight, bacon_parts$type, sum) /
+      tapply(bacon_parts$weight, bacon_parts$type, sum)
+  )
+)
+
+bacon_summary %>% kable(digits = 3)
+```
+
+```{r bacon-plot}
+ggplot(bacon_parts, aes(x = weight, y = estimate, color = type, shape = type)) +
+  geom_point(size = 3, alpha = 0.85) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  labs(
+    title = "Goodman-Bacon decomposition of the TWFE estimate",
+    subtitle = "Each point is one implicit 2x2 DiD comparison inside the TWFE regression",
+    x = "Weight in the TWFE average",
+    y = "2x2 DiD estimate",
+    color = NULL,
+    shape = NULL
+  ) +
+  theme(legend.position = "bottom")
+```
+
+The key lesson is:
+
+- some weight comes from treated vs never-treated comparisons, which are often the cleanest;
+- some weight comes from earlier-treated vs later-treated comparisons;
+- some weight comes from later-treated vs earlier-treated comparisons.
+
+Those last two categories can be problematic because a treated unit may be used as a control for another treated unit. If treatment effects are heterogeneous across cohorts or over exposure length, the TWFE average can become hard to interpret.
+
+> **Exercise 2:** Suppose treatment effects grow over time after adoption. Why might an "earlier-treated vs later-treated" comparison distort the overall TWFE estimate?
+
+# 4. Estimate modern staggered-DiD effects
+
+To avoid contaminated comparisons, we now estimate group-time average treatment effects using `did::att_gt()`.
+
+Our control group will be **not-yet-treated states**, meaning states that have not adopted Castle Doctrine by a given year. This is closer to the logic of "clean controls" from Lab 10.
+
+```{r att-gt}
+cs_mod <- att_gt(
+  yname = "l_homicide",
+  tname = "year",
+  idname = "sid",
+  gname = "first_treat",
+  data = castle,
+  control_group = "nevertreated",
+  est_method = "reg",
+  bstrap = FALSE,
+  cband = FALSE
+)
+
+overall_att <- aggte(cs_mod, type = "simple") # overall ATT across all cohorts and time periods
+group_att <- aggte(cs_mod, type = "group") # cohort-specific ATTs by first treatment year
+dynamic_att <- aggte(cs_mod, type = "dynamic") # event-study aggregation of ATTs by time relative to treatment
+```
+
+## Compare TWFE to the modern ATT
+
+```{r compare-table}
+comparison <- tibble(
+  model = c("TWFE", "Callaway-Sant'Anna overall ATT"),
+  estimate = c(
+    tidy(twfe_mod)$estimate,
+    overall_att$overall.att
+  ),
+  std.error = c(
+    tidy(twfe_mod)$std.error,
+    overall_att$overall.se
+  )
+)
+
+comparison %>% kable(digits = 3)
+```
+
+```{r overall-interpretation}
+percent_effect <- 100 * (exp(overall_att$overall.att) - 1)
+percent_effect
+```
+
+The overall staggered-DiD estimate is about `r round(percent_effect, 1)` percent in homicide, which is close to the broad substantive conclusion of Cheng and Hoekstra: Castle Doctrine expansions are associated with higher homicide rather than clear deterrence.
+
+> **Discussion:** Why is the modern staggered-DiD estimate larger than the TWFE estimate in this application? What comparisons are being removed or reweighted?
+
+## Cohort-specific effects
+
+```{r cohort-effects}
+group_table <- tibble(
+  cohort = group_att$egt,
+  estimate = group_att$att.egt,
+  std.error = group_att$se.egt,
+  lower = estimate - 1.96 * std.error,
+  upper = estimate + 1.96 * std.error
+)
+
+group_table %>% kable(digits = 3)
+```
+
+```{r cohort-effects-plot}
+ggplot(group_table, aes(x = factor(cohort), y = estimate)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.15) +
+  geom_point(size = 2.8, color = "firebrick") +
+  labs(
+    title = "Cohort-specific staggered-DiD estimates",
+    x = "First treatment year",
+    y = "ATT on log homicide"
+  )
+```
+
+The cohort estimates show that most adoption cohorts from 2005 to 2008 have positive effects, while the 2009 cohort is much less precise because there is very little post-treatment time left in the sample.
+
+## Event-time dynamics
+
+```{r dynamic-plot}
+ggdid(dynamic_att) +
+  labs(
+    title = "Event-study aggregation from the staggered-DiD model",
+    x = "Event time",
+    y = "ATT on log homicide"
+  )
+```
+
+This dynamic plot should be read carefully:
+
+- event time 0 is the treatment year,
+- positive post-treatment effects suggest homicide rises after adoption,
+- very early leads or very late lags are based on fewer cohorts and should not be overinterpreted.
+
+> **Exercise 3:** Which event times look most informative here? Which ones are likely to be noisy because only a few cohorts contribute to them?
+
+# 5. Final takeaway
+
+The main message from this lab is that **staggered treatment timing changes the estimator, not just the dataset**.
+
+- In a 2x2 DiD, the ATT is built from one transparent comparison.
+- In a staggered design, TWFE averages many comparisons together.
+- The Goodman-Bacon decomposition helps us see those hidden comparisons.
+- Modern estimators such as Callaway-Sant'Anna recover group-time ATTs using cleaner control groups.
+
+That is why the applied workflow for staggered DiD should usually be:
+
+1. map the treatment timing;
+2. estimate the familiar TWFE model as a benchmark;
+3. inspect where that benchmark gets its identifying variation;
+4. report a modern staggered-DiD estimate that matches the causal question more closely.

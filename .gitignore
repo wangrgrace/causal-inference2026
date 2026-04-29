@@ -24,3 +24,6 @@
 
 # Ignore .vscode settings
 .vscode/
+
+# Local R package library used for ad hoc installs
+r_libs/

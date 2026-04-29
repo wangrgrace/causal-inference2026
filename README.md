@@ -52,8 +52,8 @@ In this week, we will learn how to analyze the causal effects of policy interven
 
 The lab uses a classroom 2×2 DiD example from [Library of Statistical Techniques (LOST)](https://lost-stats.github.io/Model_Estimation/Research_Design/two_by_two_difference_in_difference.html) on **marijuana legalization and murder rates**, where treated states legalized marijuana in 2014 and control states did not. The session is structured to estimate the DiD effect with average outcomes and then with regression, and evaluate the identifying assumptions of **no anticipation** and **parallel trends**. This lab emphasizes how to choose a clean control group and how to interpret the DiD estimand as an ATT in a 2×2 design.
 
-## Lab 11 (Synthetic control)
-In this week, we study synthetic control methods for identifying the effects of policy interventions––including those that are implemented for a single unit. We contrast synthetic control with difference-in-differences to consider how distinct sources of randomness in our design motivate our choice of method in the context of panel data. 
+## Lab 11 (Staggered difference-in-differences)
+In this week, we move from the clean 2×2 DiD setup to panels where different units adopt treatment in different years. The main question is no longer just how to compare treated and untreated units, but also which units are valid controls at each point in time and why naive two-way fixed effects can mix together problematic comparisons.
 
-## Lab 12 (Mediation, of the Statistical Kind)
-When policy effects can be realised according to several mechanisms at the same time how important is each route? What happens if one offset the effects of the other? Answering these questions is the task of mediation analysis, beloved of psychologists and communication scholars and, we shall see, rather more difficult than they hoped. 
+The lab is built around [Cheng & Hoekstra (2013)](https://www.nber.org/papers/w18134) on **Castle Doctrine laws and homicide**, using the state-year panel distributed in the [`bacondecomp` package](https://rdrr.io/cran/bacondecomp/man/castle.html). Students first estimate a familiar TWFE model, then inspect its Goodman-Bacon decomposition, and finally estimate group-time ATTs with the modern staggered-DiD approach of [Callaway & Sant'Anna (2021)](https://doi.org/10.1016/j.jeconom.2020.12.001). The lab closes with short participation exercises and a feasible extension comparing homicide effects to other crime outcomes in the same dataset.
+
